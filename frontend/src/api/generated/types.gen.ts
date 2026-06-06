@@ -306,6 +306,40 @@ export type StartGameResponse = {
 };
 
 /**
+ * UserOut
+ */
+export type UserOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Github Id
+     */
+    github_id: number;
+    /**
+     * Login
+     */
+    login: string;
+    /**
+     * Name
+     */
+    name: string | null;
+    /**
+     * Avatar Url
+     */
+    avatar_url: string;
+    /**
+     * Is Admin
+     */
+    is_admin: boolean;
+    /**
+     * Created At
+     */
+    created_at: string;
+};
+
+/**
  * ValidationError
  */
 export type ValidationError = {
@@ -511,3 +545,85 @@ export type SseLiveStreamResponses = {
 };
 
 export type SseLiveStreamResponse = SseLiveStreamResponses[keyof SseLiveStreamResponses];
+
+export type GithubLoginData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/auth/github/login';
+};
+
+export type GithubLoginResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type GithubCallbackData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * Code
+         */
+        code: string;
+        /**
+         * State
+         */
+        state: string;
+    };
+    url: '/auth/github/callback';
+};
+
+export type GithubCallbackErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GithubCallbackError = GithubCallbackErrors[keyof GithubCallbackErrors];
+
+export type GithubCallbackResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type MeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/me';
+};
+
+export type MeResponses = {
+    /**
+     * Successful Response
+     */
+    200: UserOut;
+};
+
+export type MeResponse = MeResponses[keyof MeResponses];
+
+export type LogoutData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/auth/logout';
+};
+
+export type LogoutResponses = {
+    /**
+     * Response Logout
+     *
+     * Successful Response
+     */
+    200: {
+        [key: string]: boolean;
+    };
+};
+
+export type LogoutResponse = LogoutResponses[keyof LogoutResponses];

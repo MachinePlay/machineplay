@@ -11,5 +11,27 @@ class Settings(BaseSettings):
     )
     mongo_db: str = Field(default="machineplay", validation_alias="MONGO_DB")
 
+    # Secret used to sign session cookies. MUST be overridden in production.
+    secret_key: str = Field(
+        default="dev-insecure-change-me", validation_alias="SECRET_KEY"
+    )
+    # Send the session cookie only over HTTPS. Set true in production.
+    cookie_secure: bool = Field(default=False, validation_alias="COOKIE_SECURE")
+
+    # GitHub OAuth app credentials (https://github.com/settings/developers).
+    github_client_id: str = Field(default="", validation_alias="GITHUB_CLIENT_ID")
+    github_client_secret: str = Field(
+        default="", validation_alias="GITHUB_CLIENT_SECRET"
+    )
+    # Must match the "Authorization callback URL" of the GitHub OAuth app.
+    oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/auth/github/callback",
+        validation_alias="OAUTH_REDIRECT_URI",
+    )
+    # Where to send the browser back to after a successful login.
+    frontend_url: str = Field(
+        default="http://localhost:5173", validation_alias="FRONTEND_URL"
+    )
+
 
 settings = Settings()

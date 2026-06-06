@@ -7,7 +7,7 @@ from beanie import init_beanie
 from pymongo import AsyncMongoClient
 from testcontainers.mongodb import MongoDbContainer
 
-from app.models import Engine, Game
+from app.models import Engine, Game, User
 
 
 @pytest.fixture(scope="session")
@@ -25,7 +25,7 @@ async def mongo_client(
         url, tz_aware=True, tzinfo=timezone.utc
     )
     await init_beanie(
-        database=client["machineplay_test"], document_models=[Engine, Game]
+        database=client["machineplay_test"], document_models=[Engine, Game, User]
     )
     try:
         yield client

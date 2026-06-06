@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { Chessground } from '../Chessground'
+import { useAuth } from '../auth-context'
 import {
   API_URL,
   liveStreamUrl,
@@ -82,6 +83,7 @@ function RecentGameRow({ game }: { game: Game }) {
 
 export default function Home() {
   const navigate = useNavigate()
+  const { user, login } = useAuth()
   const [engines, setEngines] = useState<Engine[]>([])
   const [runners, setRunners] = useState<Runner[]>([])
   const [whiteId, setWhiteId] = useState('')
@@ -238,6 +240,7 @@ export default function Home() {
       const r = await fetch(`${API_URL}/game`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           white_engine_id: whiteId,
           black_engine_id: blackId,
@@ -316,19 +319,28 @@ export default function Home() {
               )}
             </select>
           </label>
-          <button
-            onClick={startGame}
-            disabled={
-              starting ||
-              engines.length === 0 ||
-              !whiteId ||
-              !blackId ||
-              !runnerId
-            }
-            className="bg-neutral-100 text-neutral-900 rounded px-3 py-1 disabled:opacity-40"
-          >
-            {starting ? 'starting…' : 'start game'}
-          </button>
+          {user ? (
+            <button
+              onClick={startGame}
+              disabled={
+                starting ||
+                engines.length === 0 ||
+                !whiteId ||
+                !blackId ||
+                !runnerId
+              }
+              className="bg-neutral-100 text-neutral-900 rounded px-3 py-1 disabled:opacity-40"
+            >
+              {starting ? 'starting…' : 'start game'}
+            </button>
+          ) : (
+            <button
+              onClick={login}
+              className="bg-neutral-100 text-neutral-900 rounded px-3 py-1"
+            >
+              sign in to start a game
+            </button>
+          )}
           {startError && (
             <span className="text-red-400 text-xs self-center">{startError}</span>
           )}

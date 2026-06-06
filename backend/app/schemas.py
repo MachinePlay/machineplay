@@ -26,6 +26,18 @@ class RunnerOut(BaseModel):
     name: str
 
 
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    github_id: int
+    login: str
+    name: str | None
+    avatar_url: str
+    is_admin: bool
+    created_at: datetime
+
+
 class EngineOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

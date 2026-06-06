@@ -19,6 +19,12 @@ class NotFoundError(AppException):
     message = "Resource not found"
 
 
+class AuthError(AppException):
+    status_code = 401
+    code = "unauthorized"
+    message = "Authentication required"
+
+
 class RunnerBusyError(AppException):
     status_code = 503
     code = "runner_busy"

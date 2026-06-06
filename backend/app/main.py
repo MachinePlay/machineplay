@@ -6,8 +6,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
+from starlette.middleware.sessions import SessionMiddleware
 
 from app import db, streaming
+from app.auth import router as auth_router
+from app.config import settings
 from app.exceptions import AppException
 from app.routes import router
 
@@ -50,6 +53,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Signs the session cookie that holds the logged-in user id. `same_site="lax"`
+# is enough because the frontend (machineplay.org) and API (api.machineplay.org)
+# share a registrable domain; flip `cookie_secure` on in production for HTTPS.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.secret_key,
+    same_site="lax",
+    https_only=settings.cookie_secure,
+)
+
 
 @app.exception_handler(AppException)
 async def app_error_handler(request: Request, exc: AppException) -> JSONResponse:
@@ -67,3 +80,4 @@ async def app_error_handler(request: Request, exc: AppException) -> JSONResponse
 
 
 app.include_router(router)
+app.include_router(auth_router)

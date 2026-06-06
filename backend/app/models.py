@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
+from typing import Annotated
 from uuid import UUID, uuid4
 
-from beanie import Document
+from beanie import Document, Indexed
 from pydantic import Field
 
 from machineplay.schemas import GameStatus
@@ -19,6 +20,15 @@ class Engine(UUIDDocument):
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class User(UUIDDocument):
+    github_id: Annotated[int, Indexed(unique=True)]
+    login: str
+    name: str | None = None
+    avatar_url: str = ""
+    is_admin: bool = False
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class Game(UUIDDocument):

@@ -3,15 +3,16 @@ import logging
 from collections.abc import AsyncIterable
 from uuid import UUID
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.sse import EventSourceResponse
 
 from machineplay import schemas
 
 from app import streaming
+from app.auth import require_user
 from app.config import settings
 from app.exceptions import NotFoundError, RunnerBusyError
-from app.models import Engine, Game
+from app.models import Engine, Game, User
 from app.schemas import (
     EngineOut,
     GameOut,
@@ -36,7 +37,10 @@ async def list_runners() -> list[streaming.Runner]:
 
 
 @router.post("/game")
-async def start_game(payload: StartGameRequest) -> StartGameResponse:
+async def start_game(
+    payload: StartGameRequest, user: User = Depends(require_user)
+) -> StartGameResponse:
+    logger.info("start_game requested by user=%s", user.login)
     white = await Engine.get(payload.white_engine_id)
     black = await Engine.get(payload.black_engine_id)
     if white is None or black is None:

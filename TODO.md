@@ -77,18 +77,18 @@ The frontend is a single `App.tsx` today. Wire up routing and stub each page; la
 - [ ] `POST /game/{id}/cancel` to stop a running or pending game
 
 ## M5 — GitHub auth
-- [ ] Use signed-cookie sessions via Starlette `SessionMiddleware`
-- [ ] Register OAuth app on GitHub, store client id/secret in `.env`
-- [ ] `GET /auth/github/login` → redirect to GitHub
-- [ ] `GET /auth/github/callback` → exchange code, set session cookie
-- [ ] `User` Beanie document: github_id, login, avatar_url, is_admin, created_at
-- [ ] `GET /me` returns current user (or 401)
-- [ ] `POST /auth/logout`
-- [ ] Login button in the navbar; avatar + logout when signed in
-- [ ] Decide who can start games (any logged-in user, with concurrency cap from M4)
-- [ ] Gate `POST /engine/upload` and `POST /game` behind auth
+- [x] Use signed-cookie sessions via Starlette `SessionMiddleware`
+- [ ] Register OAuth app on GitHub, store client id/secret in `.env` (`.env`/`.env.example` slots ready; needs real credentials)
+- [x] `GET /auth/github/login` → redirect to GitHub
+- [x] `GET /auth/github/callback` → exchange code, set session cookie
+- [x] `User` Beanie document: github_id, login, avatar_url, is_admin, created_at
+- [x] `GET /me` returns current user (or 401)
+- [x] `POST /auth/logout`
+- [x] Login button in the navbar; avatar + logout when signed in
+- [x] Decide who can start games (any logged-in user, with concurrency cap from M4)
+- [x] Gate `POST /game` behind auth (no `/engine/upload` endpoint yet — gate in M6)
 - [ ] Add `owner_id` to `Engine`; only owner (or admin) can delete
-- [ ] Script `scripts/promote_admin.py <github_login>` to flip `is_admin=True`
+- [x] Script `scripts/promote_admin.py <github_login>` to flip `is_admin=True`
 
 ## M6 — Docker engine upload
 - [ ] Pick image transport (default: multipart `docker save` tarball — registry push is M+1)
