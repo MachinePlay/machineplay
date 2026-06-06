@@ -78,7 +78,7 @@ The frontend is a single `App.tsx` today. Wire up routing and stub each page; la
 
 ## M5 — GitHub auth
 - [x] Use signed-cookie sessions via Starlette `SessionMiddleware`
-- [ ] Register OAuth app on GitHub, store client id/secret in `.env` (`.env`/`.env.example` slots ready; needs real credentials)
+- [x] Register OAuth app on GitHub, store client id/secret in `.env` (`.env`/`.env.example` slots ready; needs real credentials)
 - [x] `GET /auth/github/login` → redirect to GitHub
 - [x] `GET /auth/github/callback` → exchange code, set session cookie
 - [x] `User` Beanie document: github_id, login, avatar_url, is_admin, created_at
@@ -132,7 +132,7 @@ The frontend is a single `App.tsx` today. Wire up routing and stub each page; la
 - [ ] Document deploy steps in README
 
 ## Stretch / nice-to-have
-- [ ] Volunteer worker daemon (Rust CLI) that connects to backend over WebSocket and runs games on its own machine, unlocking concurrent games beyond the single-server cap
+- [x] Volunteer worker daemon that connects to backend over WebSocket and runs games on its own machine, unlocking concurrent games beyond the single-server cap
 - [ ] Stream raw engine `info` lines (depth, score, pv) as a new event type
 - [ ] Render last engine eval as a small bar next to the board
 - [ ] Per-engine resource limit overrides (memory, cpus)
