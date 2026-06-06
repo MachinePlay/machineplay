@@ -62,19 +62,24 @@ The frontend is a single `App.tsx` today. Wire up routing and stub each page; la
 - [ ] Engine detail page with description and games played count
 
 ## M4 — Multi-game (break the singleton)
+Concurrency is now handled by runners: each runner declares `max_games` and runs
+that many games at once; total capacity = sum over connected runners. `POST /game`
+schedules onto a runner and returns `RunnerBusyError` when it's full. This replaced
+the original "one game at a time, queue the rest" plan.
 - [x] `Game` Beanie document: id, white_id, black_id, status, result, created_at, pgn
-- [ ] One `GameStream` per game id (registry/dict keyed by game id)
+- [x] One `GameStream` per game id (registry/dict keyed by game id) — `GameRegistry`
 - [x] `POST /game` returns a game id; current behaviour becomes "start and return id"
 - [x] `GET /game/{id}` returns metadata + current FEN
-- [ ] `GET /sse/stream/{game_id}` instead of the global stream
+- [x] Per-game SSE stream instead of the global stream — `GET /stream/game/{game_id}` (global stream kept as `/stream/live` home-page aggregate)
 - [x] `GET /game` lists recent games
 - [x] Persist moves to the Game doc as they happen (append to `moves: list[str]`)
 - [x] Persist final PGN on `game_end`
 - [x] `/game/{id}` page on the frontend to watch any past or live game
 - [x] Home page lists "live now" + "recent" games
-- [ ] Only one live game at a time; further `POST /game` calls queue with `status=pending`
-- [ ] Worker promotes the next `pending` game to `running` when the current one finishes
-- [ ] `POST /game/{id}/cancel` to stop a running or pending game
+- [x] ~~Only one live game at a time; queue with `status=pending`~~ — obsolete: runner `max_games` capacity + busy rejection
+- [x] ~~Worker promotes the next `pending` game~~ — obsolete: no pending queue
+- [ ] `POST /game/{id}/cancel` to stop a running game (internal `abort_game()` exists; needs an endpoint)
+- [ ] Queue games when all runners are full instead of rejecting (only if needed for M8 tournaments)
 
 ## M5 — GitHub auth
 - [x] Use signed-cookie sessions via Starlette `SessionMiddleware`
