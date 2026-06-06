@@ -56,10 +56,10 @@ The frontend is a single `App.tsx` today. Wire up routing and stub each page; la
 - [ ] If an engine process crashes mid-game, end with forfeit by that side
 
 ## M3 — Engine CRUD UI
-- [ ] `GET /engine/{id}` endpoint
+- [x] `GET /engine/{id}` endpoint (returns engine + its versions)
 - [ ] `DELETE /engine/{id}` endpoint
-- [ ] `/engine` page listing all engines with name + description + owner
-- [ ] Engine detail page with description and games played count
+- [x] `/engine` page listing all engines with name + description + owner (+ version count)
+- [x] Engine detail page with description + versions (games-played count still TODO)
 
 ## M4 — Multi-game (break the singleton)
 Concurrency is now handled by runners: each runner declares `max_games` and runs
@@ -92,30 +92,46 @@ the original "one game at a time, queue the rest" plan.
 - [x] Login button in the navbar; avatar + logout when signed in
 - [x] Decide who can start games (any logged-in user, with concurrency cap from M4)
 - [x] Gate `POST /game` behind auth (no `/engine/upload` endpoint yet — gate in M6)
-- [ ] Add `owner_id` to `Engine`; only owner (or admin) can delete
+- [x] Add `owner_id` (+ denormalized `owner_login`) to `Engine` — owner/admin-only delete still pending (needs M3 `DELETE /engine/{id}`)
 - [x] Script `scripts/promote_admin.py <github_login>` to flip `is_admin=True`
 
 ## M6 — Docker engine upload
-- [ ] Pick image transport (default: multipart `docker save` tarball — registry push is M+1)
+Split into two chunks. **Upload pipeline (done):** users run `machineplay upload`
+from a forked template — the CLI builds the Dockerfile, reads the engine name from
+the UCI `id name`, and POSTs the `docker save` tarball; the backend stores it and
+records an `Engine` + `EngineVersion`. **Run-in-games (pending):** loading and
+running uploaded images during games (sandboxing, etc.) is still to do, so uploaded
+engines are listed but not yet playable.
+
+Upload pipeline (done):
+- [x] Pick image transport — multipart `docker save` tarball (registry is the planned next step, see below)
+- [x] `machineplay` CLI is now a dev tool: `login` (paste API token), `upload`, `whoami`, `logout`; no-arg still runs the runner
+- [x] CLI token auth: `ApiToken` doc, `POST /me/tokens` (mints, shown once), `Authorization: Bearer` accepted on `/me` + upload
+- [x] Add `storage/` to `.gitignore`
+- [x] `POST /engine/upload` (token-auth, multipart) streams the `.tar` to `storage/engines/{version_id}.tar`, size-capped by `MAX_UPLOAD_BYTES` (200MB)
+- [x] `Engine` gains `owner_id`/`owner_login` (unique `(owner_id, name)`); separate `EngineVersion` collection (engine_id, version, file_path, size, created_at) instead of replacing `command`
+- [x] Frontend: `/engine` list, `/engine/{id}` detail (versions), `/engine/upload` CLI instructions, `/cli` token page
+- [x] Per-engine tarball size cap (200MB via `MAX_UPLOAD_BYTES`)
+- [x] Raise nginx `client_max_body_size` on `api.machineplay.org` (default 1M was 413ing uploads) — set in the malganis nix config
+- [ ] **Registry transport** — stand up a Docker registry; CLI pushes by digest, backend/runner pull layers (dedupes base layers, drops big tarball POSTs through nginx). Replaces the tarball path.
+
+Run uploaded engines in games (pending):
 - [ ] Decide docker daemon access (rootless docker, `docker` group, or socket-proxy) — write one-line note in deploy README
-- [ ] Add `storage/` to `.gitignore`
-- [ ] `POST /engine/upload` accepts a `.tar` from `docker save`, saves to `storage/engines/{engine_id}.tar`
-- [ ] On upload: `docker load` the tarball, tag as `machineplay-engine:{engine_id}`
-- [ ] Replace `command: str` on `Engine` with `image_tag: str` (always docker)
-- [ ] Run engine via `docker run --rm -i --network none --memory 512m --cpus 1 <image>` and pipe UCI over stdio
+- [ ] On upload (or first use): `docker load` the tarball, tag as `machineplay-engine:{version_id}`
+- [ ] Wire game-running to the uploaded image: run via `docker run --rm -i --network none --memory 512m --cpus 1 <image>` and pipe UCI over stdio; pick which version plays
 - [ ] Delete `scripts/seed_stockfish.py` — no more seeded binary engines
 - [ ] Engine sandboxing: `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`
 - [ ] Per-game wallclock timeout: kill container after N minutes regardless of clock
-- [ ] On engine delete: remove image (`docker image rm`) and tarball
-- [ ] Cap engines per user (e.g. 5) and per-engine tarball size (e.g. 200MB)
+- [ ] On engine delete: remove image (`docker image rm`) and stored tarball
+- [ ] Cap engines per user (e.g. 5)
 - [ ] Surface docker load / run errors clearly to the user
 - [ ] Smoke-test endpoint: spin up the image, send `uci`, verify `uciok` reply, return ok/fail
 
 ## M7 — Starter template
-- [ ] Create `template-engine/` repo (separate) — minimal Python UCI engine that plays random legal moves
-- [ ] Include `Dockerfile` and `README` with build/upload instructions
-- [ ] "Fork starter template" button → opens GitHub fork URL
-- [ ] Docs page on the site explaining the protocol contract + how to upload
+- [x] Create starter repo — `MachinePlay/python-chess-starter` (separate): minimal Python UCI engine that plays the first legal move (random/minimax tutorials to follow)
+- [x] Include `Dockerfile` and `README` with build/upload instructions
+- [x] "Fork starter template" link → opens GitHub fork URL (on the `/engine/upload` page)
+- [ ] Docs page on the site explaining the protocol contract + how to upload (upload steps covered on `/engine/upload`; protocol contract doc still TODO)
 
 ## M8 — Tournaments
 - [ ] `Tournament` doc: name, participant_ids, status, created_at
