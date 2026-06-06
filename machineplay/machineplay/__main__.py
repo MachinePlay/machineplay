@@ -1,6 +1,7 @@
 import asyncio
 import io
 import os
+import random
 import re
 import socket
 import ssl
@@ -11,13 +12,28 @@ import certifi
 import chess
 import chess.pgn
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosedError
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from machineplay import schemas
 
 RUNNER_ID = uuid4()
 BACKEND_URL = os.environ.get("BACKEND_URL", "wss://api.machineplay.org/ws")
 MAX_GAMES = int(os.environ.get("MAX_GAMES") or (os.cpu_count() or 1))
 FASTCHESS_PATH = os.environ.get("FASTCHESS_PATH", "fastchess")
+
+# Reconnect backoff (seconds). Full jitter: sleep ~ U(0, delay), delay doubles
+# up to RECONNECT_MAX. A session that stayed up at least RECONNECT_RESET_AFTER
+# is considered healthy, so its drop (e.g. a backend hot-reload) resets backoff.
+RECONNECT_BASE = float(os.environ.get("RECONNECT_BASE", "0.5"))
+RECONNECT_MAX = float(os.environ.get("RECONNECT_MAX", "30.0"))
+RECONNECT_RESET_AFTER = float(os.environ.get("RECONNECT_RESET_AFTER", "5.0"))
+
+# Connection-level errors that warrant a reconnect attempt (vs. crashing).
+_RETRYABLE = (OSError, ConnectionClosed, InvalidHandshake, TimeoutError)
+
+
+class _Terminated(Exception):
+    """Raised when the server sends an explicit 'exit' command (stop for good)."""
+
 
 # fastchess engine-log format: "<--- go ... wtime X ... btime Y" (sent to engine)
 _GO_RE = re.compile(r"<---\s+go\b.*\bwtime\s+(\d+).*\bbtime\s+(\d+)")
@@ -226,18 +242,15 @@ class Game:
         )
 
 
-async def connect_backend_ws():
+async def connect_backend_ws(ssl_ctx, on_connected):
     print(f"connecting to {BACKEND_URL}")
-    ssl_ctx = (
-        ssl.create_default_context(cafile=certifi.where())
-        if BACKEND_URL.startswith("wss://")
-        else None
-    )
     async with connect(BACKEND_URL, ssl=ssl_ctx) as ws:
         intro = schemas.Introduction(
             runner_id=RUNNER_ID, name=socket.gethostname(), max_games=MAX_GAMES
         )
         await ws.send(intro.model_dump_json())
+        print("connected")
+        on_connected()
 
         scheduled_commands: asyncio.Queue[schemas.ClientCommand] = asyncio.Queue()
         games: dict[UUID, Game] = {}
@@ -274,7 +287,7 @@ async def connect_backend_ws():
                         print("stop_game")
                     case schemas.Terminate():
                         print("exit")
-                        break
+                        raise _Terminated
 
         async def sender():
             while True:
@@ -291,16 +304,60 @@ async def connect_backend_ws():
             )
             for task in done:
                 task.result()  # re-raise exceptions
-        except ConnectionClosedError:
-            print("bye")
         finally:
             recv_task.cancel()
             send_task.cancel()
+            # Abandon in-flight games so their fastchess subprocesses don't
+            # outlive the connection; the server reschedules on reconnect.
+            for game in games.values():
+                game.task.cancel()
+
+
+async def run_forever():
+    ssl_ctx = (
+        ssl.create_default_context(cafile=certifi.where())
+        if BACKEND_URL.startswith("wss://")
+        else None
+    )
+    loop = asyncio.get_running_loop()
+    delay = RECONNECT_BASE
+
+    while True:
+        connected_at: float | None = None
+
+        def on_connected() -> None:
+            nonlocal connected_at
+            connected_at = loop.time()
+
+        try:
+            await connect_backend_ws(ssl_ctx, on_connected)
+            return  # connect_backend_ws only returns on a clean close
+        except _Terminated:
+            print("terminated by server")
+            return
+        except _RETRYABLE as exc:
+            print(f"connection lost: {type(exc).__name__}: {exc}")
+
+        # A session that stayed up a while (healthy) resets backoff so a backend
+        # hot-reload reconnects fast; a backend that's truly down keeps backing off.
+        if (
+            connected_at is not None
+            and loop.time() - connected_at >= RECONNECT_RESET_AFTER
+        ):
+            delay = RECONNECT_BASE
+
+        wait = random.uniform(0, delay)
+        print(f"reconnecting in {wait:.1f}s")
+        await asyncio.sleep(wait)
+        delay = min(delay * 2, RECONNECT_MAX)
 
 
 def main():
     print("Welcome")
-    asyncio.run(connect_backend_ws())
+    try:
+        asyncio.run(run_forever())
+    except KeyboardInterrupt:
+        print("shutting down")
 
 
 if __name__ == "__main__":
