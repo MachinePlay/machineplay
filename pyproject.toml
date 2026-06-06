@@ -3,6 +3,7 @@ name = "machineplay"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.13.13"
 dependencies = [
     "certifi>=2026.4.22",
