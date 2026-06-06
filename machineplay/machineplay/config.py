@@ -9,6 +9,11 @@ BACKEND_URL = os.environ.get("BACKEND_URL", "wss://api.machineplay.org/ws")
 MAX_GAMES = int(os.environ.get("MAX_GAMES") or (os.cpu_count() or 1))
 FASTCHESS_PATH = os.environ.get("FASTCHESS_PATH", "fastchess")
 
+# REST API base for the CLI dev tool (login/upload). The website the user logs
+# into to copy a token.
+API_BASE_URL = os.environ.get("MACHINEPLAY_API_URL", "https://api.machineplay.org")
+WEB_URL = os.environ.get("MACHINEPLAY_WEB_URL", "https://machineplay.org")
+
 # Reconnect backoff (seconds). Full jitter: sleep ~ U(0, delay), delay doubles
 # up to RECONNECT_MAX. A session that stayed up at least RECONNECT_RESET_AFTER
 # is considered healthy, so its drop (e.g. a backend hot-reload) resets backoff.

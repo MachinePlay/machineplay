@@ -1,8 +1,11 @@
 import type {
+  EngineDetailOut,
   EngineOut,
+  EngineVersionOut,
   GameOut,
   RunnerOut,
   SseStreamResponse,
+  TokenOut,
   UserOut,
 } from './api/generated'
 
@@ -29,10 +32,34 @@ export async function logout(): Promise<void> {
   })
 }
 
+export async function fetchEngines(): Promise<Engine[]> {
+  const r = await fetch(`${API_URL}/engine`)
+  if (!r.ok) throw new Error(`GET /engine failed: ${r.status}`)
+  return (await r.json()) as Engine[]
+}
+
+export async function fetchEngine(id: string): Promise<EngineDetail> {
+  const r = await fetch(`${API_URL}/engine/${id}`)
+  if (!r.ok) throw new Error(`GET /engine/${id} failed: ${r.status}`)
+  return (await r.json()) as EngineDetail
+}
+
+// Mint a CLI API token for the logged-in user (shown once). Session-authed.
+export async function createCliToken(): Promise<string> {
+  const r = await fetch(`${API_URL}/me/tokens`, {
+    method: 'POST',
+    credentials: 'include',
+  })
+  if (!r.ok) throw new Error(`POST /me/tokens failed: ${r.status}`)
+  return ((await r.json()) as TokenOut).token
+}
+
 export const START_FEN =
   'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 
 export type Engine = EngineOut
+export type EngineDetail = EngineDetailOut
+export type EngineVersion = EngineVersionOut
 export type Runner = RunnerOut
 export type Game = GameOut
 export type User = UserOut

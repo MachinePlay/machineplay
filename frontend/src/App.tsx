@@ -3,6 +3,10 @@ import Layout from './Layout'
 import { AuthProvider } from './auth'
 import Home from './pages/Home'
 import GamePage from './pages/GamePage'
+import Engines from './pages/Engines'
+import EngineDetail from './pages/EngineDetail'
+import UploadInfo from './pages/UploadInfo'
+import CliToken from './pages/CliToken'
 import NotFound from './pages/NotFound'
 import { ParamStub, Stub } from './pages/Stub'
 
@@ -14,15 +18,10 @@ export default function App() {
           <Route element={<Layout />}>
             <Route index element={<Home />} />
             <Route path="game/:id" element={<GamePage />} />
-            <Route path="engine" element={<Stub title="engines" />} />
-            <Route
-              path="engine/upload"
-              element={<Stub title="upload engine" />}
-            />
-            <Route
-              path="engine/:id"
-              element={<ParamStub title="engine" paramName="id" />}
-            />
+            <Route path="engine" element={<Engines />} />
+            <Route path="engine/upload" element={<UploadInfo />} />
+            <Route path="engine/:id" element={<EngineDetail />} />
+            <Route path="cli" element={<CliToken />} />
             <Route path="tournament" element={<Stub title="tournaments" />} />
             <Route
               path="tournament/new"

@@ -5,6 +5,54 @@ export type ClientOptions = {
 };
 
 /**
+ * Body_upload_engine
+ */
+export type BodyUploadEngine = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Version
+     */
+    version: string;
+    /**
+     * Image
+     */
+    image: Blob | File;
+};
+
+/**
+ * EngineDetailOut
+ */
+export type EngineDetailOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Description
+     */
+    description: string;
+    /**
+     * Owner Login
+     */
+    owner_login: string | null;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Versions
+     */
+    versions: Array<EngineVersionOut>;
+};
+
+/**
  * EngineOut
  */
 export type EngineOut = {
@@ -24,6 +72,62 @@ export type EngineOut = {
      * Description
      */
     description: string;
+    /**
+     * Owner Login
+     */
+    owner_login?: string | null;
+    /**
+     * Version Count
+     */
+    version_count?: number;
+};
+
+/**
+ * EngineUploadResponse
+ */
+export type EngineUploadResponse = {
+    /**
+     * Engine Id
+     */
+    engine_id: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Owner Login
+     */
+    owner_login: string | null;
+    /**
+     * Version
+     */
+    version: string;
+    /**
+     * Url
+     */
+    url: string;
+};
+
+/**
+ * EngineVersionOut
+ */
+export type EngineVersionOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Version
+     */
+    version: string;
+    /**
+     * Size Bytes
+     */
+    size_bytes: number;
+    /**
+     * Created At
+     */
+    created_at: string;
 };
 
 /**
@@ -306,6 +410,16 @@ export type StartGameResponse = {
 };
 
 /**
+ * TokenOut
+ */
+export type TokenOut = {
+    /**
+     * Token
+     */
+    token: string;
+};
+
+/**
  * UserOut
  */
 export type UserOut = {
@@ -384,6 +498,61 @@ export type ListEnginesResponses = {
 };
 
 export type ListEnginesResponse = ListEnginesResponses[keyof ListEnginesResponses];
+
+export type GetEngineData = {
+    body?: never;
+    path: {
+        /**
+         * Engine Id
+         */
+        engine_id: string;
+    };
+    query?: never;
+    url: '/engine/{engine_id}';
+};
+
+export type GetEngineErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetEngineError = GetEngineErrors[keyof GetEngineErrors];
+
+export type GetEngineResponses = {
+    /**
+     * Successful Response
+     */
+    200: EngineDetailOut;
+};
+
+export type GetEngineResponse = GetEngineResponses[keyof GetEngineResponses];
+
+export type UploadEngineData = {
+    body: BodyUploadEngine;
+    path?: never;
+    query?: never;
+    url: '/engine/upload';
+};
+
+export type UploadEngineErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UploadEngineError = UploadEngineErrors[keyof UploadEngineErrors];
+
+export type UploadEngineResponses = {
+    /**
+     * Successful Response
+     */
+    200: EngineUploadResponse;
+};
+
+export type UploadEngineResponse = UploadEngineResponses[keyof UploadEngineResponses];
 
 export type ListRunnersData = {
     body?: never;
@@ -607,6 +776,22 @@ export type MeResponses = {
 };
 
 export type MeResponse = MeResponses[keyof MeResponses];
+
+export type CreateTokenData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/me/tokens';
+};
+
+export type CreateTokenResponses = {
+    /**
+     * Successful Response
+     */
+    200: TokenOut;
+};
+
+export type CreateTokenResponse = CreateTokenResponses[keyof CreateTokenResponses];
 
 export type LogoutData = {
     body?: never;

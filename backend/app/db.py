@@ -5,7 +5,7 @@ from beanie import init_beanie
 from pymongo import AsyncMongoClient
 
 from app.config import settings
-from app.models import Engine, Game, User
+from app.models import ApiToken, Engine, EngineVersion, Game, User
 
 
 # `dict[str, Any]` is pymongo's _DocumentType — shape of raw BSON results.
@@ -15,6 +15,7 @@ async def connect() -> AsyncMongoClient[dict[str, Any]]:
         settings.mongo_url, tz_aware=True, tzinfo=timezone.utc
     )
     await init_beanie(
-        database=client[settings.mongo_db], document_models=[Engine, Game, User]
+        database=client[settings.mongo_db],
+        document_models=[Engine, EngineVersion, ApiToken, Game, User],
     )
     return client

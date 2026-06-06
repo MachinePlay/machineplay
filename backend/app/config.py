@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -6,6 +8,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     tc: str = Field(default="30+0.3", validation_alias="MACHINEPLAY_TC")
+
+    # Where uploaded engine image tarballs are stored (relative to the backend
+    # working dir unless absolute). Add `storage/` to .gitignore.
+    storage_dir: Path = Field(default=Path("storage"), validation_alias="STORAGE_DIR")
+    # Reject engine tarballs larger than this (bytes). Default 200 MB.
+    max_upload_bytes: int = Field(
+        default=200 * 1024 * 1024, validation_alias="MAX_UPLOAD_BYTES"
+    )
     mongo_url: str = Field(
         default="mongodb://localhost:27017", validation_alias="MONGO_URL"
     )

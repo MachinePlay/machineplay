@@ -27,6 +27,85 @@
         }
       }
     },
+    "/engine/{engine_id}": {
+      "get": {
+        "summary": "Get Engine",
+        "operationId": "get_engine",
+        "parameters": [
+          {
+            "name": "engine_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Engine Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineDetailOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/engine/upload": {
+      "post": {
+        "summary": "Upload Engine",
+        "description": "Accept a `docker save` tarball for engine `<user>/<name>` version `version`.\n\nFind-or-create the engine, then store the tarball and record an\nEngineVersion. The image is not loaded/run here \u2014 that's the M6 follow-up.",
+        "operationId": "upload_engine",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_engine"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineUploadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/runners": {
       "get": {
         "summary": "List Runners",
@@ -366,6 +445,25 @@
         }
       }
     },
+    "/me/tokens": {
+      "post": {
+        "summary": "Create Token",
+        "description": "Mint a CLI API token for the logged-in user (shown once).",
+        "operationId": "create_token",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/logout": {
       "post": {
         "summary": "Logout",
@@ -391,6 +489,80 @@
   },
   "components": {
     "schemas": {
+      "Body_upload_engine": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "image": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "Image"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "version",
+          "image"
+        ],
+        "title": "Body_upload_engine"
+      },
+      "EngineDetailOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "owner_login": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Login"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/EngineVersionOut"
+            },
+            "type": "array",
+            "title": "Versions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "owner_login",
+          "created_at",
+          "versions"
+        ],
+        "title": "EngineDetailOut"
+      },
       "EngineOut": {
         "properties": {
           "id": {
@@ -409,6 +581,22 @@
           "description": {
             "type": "string",
             "title": "Description"
+          },
+          "owner_login": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Login"
+          },
+          "version_count": {
+            "type": "integer",
+            "title": "Version Count",
+            "default": 0
           }
         },
         "type": "object",
@@ -419,6 +607,77 @@
           "description"
         ],
         "title": "EngineOut"
+      },
+      "EngineUploadResponse": {
+        "properties": {
+          "engine_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Engine Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "owner_login": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Login"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "engine_id",
+          "name",
+          "owner_login",
+          "version",
+          "url"
+        ],
+        "title": "EngineUploadResponse"
+      },
+      "EngineVersionOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "size_bytes",
+          "created_at"
+        ],
+        "title": "EngineVersionOut"
       },
       "FenEvent": {
         "properties": {
@@ -901,6 +1160,19 @@
           "black"
         ],
         "title": "StartGameResponse"
+      },
+      "TokenOut": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "TokenOut"
       },
       "UserOut": {
         "properties": {

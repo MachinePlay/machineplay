@@ -1,20 +1,36 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterable
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.sse import EventSourceResponse
 
 from machineplay import schemas
 
 from app import streaming
-from app.auth import require_user
+from app.auth import require_token_user, require_user
 from app.config import settings
-from app.exceptions import NotFoundError, RunnerBusyError
-from app.models import Engine, Game, User
+from app.exceptions import (
+    ConflictError,
+    NotFoundError,
+    PayloadTooLargeError,
+    RunnerBusyError,
+)
+from app.models import Engine, EngineVersion, Game, User
 from app.schemas import (
+    EngineDetailOut,
     EngineOut,
+    EngineUploadResponse,
+    EngineVersionOut,
     GameOut,
     LiveStreamEvent,
     RunnerOut,
@@ -25,10 +41,116 @@ from app.schemas import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Read uploaded tarballs in 1 MiB chunks so we never hold the whole image in RAM.
+_UPLOAD_CHUNK = 1024 * 1024
+
+
+async def _engine_to_out(engine: Engine) -> EngineOut:
+    count = await EngineVersion.find(EngineVersion.engine_id == engine.id).count()
+    return EngineOut(
+        id=engine.id,
+        name=engine.name,
+        command=engine.command,
+        description=engine.description,
+        owner_login=engine.owner_login,
+        version_count=count,
+    )
+
 
 @router.get("/engine", response_model=list[EngineOut])
-async def list_engines() -> list[Engine]:
-    return await Engine.find_all().to_list()
+async def list_engines() -> list[EngineOut]:
+    engines = await Engine.find_all().to_list()
+    return [await _engine_to_out(e) for e in engines]
+
+
+@router.get("/engine/{engine_id}", response_model=EngineDetailOut)
+async def get_engine(engine_id: UUID) -> EngineDetailOut:
+    engine = await Engine.get(engine_id)
+    if engine is None:
+        raise NotFoundError("engine not found")
+    versions = (
+        await EngineVersion.find(EngineVersion.engine_id == engine_id)
+        .sort("-created_at")
+        .to_list()
+    )
+    return EngineDetailOut(
+        id=engine.id,
+        name=engine.name,
+        description=engine.description,
+        owner_login=engine.owner_login,
+        created_at=engine.created_at,
+        versions=[EngineVersionOut.model_validate(v) for v in versions],
+    )
+
+
+@router.post("/engine/upload", response_model=EngineUploadResponse)
+async def upload_engine(
+    name: str = Form(...),
+    version: str = Form(...),
+    image: UploadFile = File(...),
+    user: User = Depends(require_token_user),
+) -> EngineUploadResponse:
+    """Accept a `docker save` tarball for engine `<user>/<name>` version `version`.
+
+    Find-or-create the engine, then store the tarball and record an
+    EngineVersion. The image is not loaded/run here — that's the M6 follow-up.
+    """
+    name = name.strip()
+    version = version.strip()
+    if not name or not version:
+        raise ConflictError("name and version are required")
+
+    engine = await Engine.find_one(Engine.owner_id == user.id, Engine.name == name)
+    if engine is None:
+        engine = Engine(name=name, owner_id=user.id, owner_login=user.login)
+        await engine.insert()
+        logger.info("created engine %s/%s id=%s", user.login, name, engine.id)
+
+    existing = await EngineVersion.find_one(
+        EngineVersion.engine_id == engine.id, EngineVersion.version == version
+    )
+    if existing is not None:
+        raise ConflictError(
+            f"version {version!r} already exists for {user.login}/{name}"
+        )
+
+    version_id = uuid4()
+    rel_path = f"engines/{version_id}.tar"
+    dest = settings.storage_dir / rel_path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    size = 0
+    try:
+        with dest.open("wb") as f:
+            while chunk := await image.read(_UPLOAD_CHUNK):
+                size += len(chunk)
+                if size > settings.max_upload_bytes:
+                    raise PayloadTooLargeError(
+                        f"image exceeds {settings.max_upload_bytes} bytes"
+                    )
+                f.write(chunk)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+
+    doc = EngineVersion(
+        id=version_id,
+        engine_id=engine.id,
+        version=version,
+        file_path=rel_path,
+        size_bytes=size,
+        image_name=name,
+    )
+    await doc.insert()
+    logger.info("stored %s/%s version=%s size=%d", user.login, name, version, size)
+
+    return EngineUploadResponse(
+        engine_id=engine.id,
+        name=name,
+        owner_login=user.login,
+        version=version,
+        url=f"{settings.frontend_url}/engine/{engine.id}",
+    )
 
 
 @router.get("/runners", response_model=list[RunnerOut])

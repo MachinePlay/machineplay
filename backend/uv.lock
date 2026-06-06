@@ -658,6 +658,7 @@ source = { editable = "../machineplay" }
 dependencies = [
     { name = "certifi" },
     { name = "chess" },
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "websockets" },
 ]
@@ -666,6 +667,7 @@ dependencies = [
 requires-dist = [
     { name = "certifi", specifier = ">=2026.4.22" },
     { name = "chess", specifier = ">=1.11.2" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "websockets", specifier = ">=16.0" },
 ]

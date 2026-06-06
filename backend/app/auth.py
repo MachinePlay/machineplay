@@ -12,6 +12,7 @@ The session itself lives in a signed cookie managed by Starlette's
 ``SessionMiddleware`` (wired up in ``app.main``).
 """
 
+import hashlib
 import logging
 import secrets
 from urllib.parse import urlencode
@@ -23,8 +24,8 @@ from fastapi.responses import RedirectResponse
 
 from app.config import settings
 from app.exceptions import AppException, AuthError
-from app.models import User
-from app.schemas import UserOut
+from app.models import ApiToken, User, utcnow
+from app.schemas import TokenOut, UserOut
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,18 +35,61 @@ GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_URL = "https://api.github.com/user"
 
 
-async def get_current_user(request: Request) -> User | None:
-    """Resolve the logged-in user from the session, or ``None``."""
-    user_id = request.session.get("user_id")
-    if not user_id:
+def _hash_token(plaintext: str) -> str:
+    return hashlib.sha256(plaintext.encode()).hexdigest()
+
+
+async def _user_from_bearer(request: Request) -> User | None:
+    """Resolve a user from an ``Authorization: Bearer <token>`` header, or None."""
+    header = request.headers.get("Authorization", "")
+    scheme, _, plaintext = header.partition(" ")
+    if scheme.lower() != "bearer" or not plaintext:
         return None
-    return await User.get(UUID(user_id))
+
+    token = await ApiToken.find_one(ApiToken.token_hash == _hash_token(plaintext))
+    if token is None:
+        return None
+
+    token.last_used_at = utcnow()
+    await token.save()
+    return await User.get(token.user_id)
+
+
+async def get_current_user(request: Request) -> User | None:
+    """Resolve the user from the browser session, falling back to a CLI token."""
+    user_id = request.session.get("user_id")
+    if user_id:
+        return await User.get(UUID(user_id))
+    return await _user_from_bearer(request)
 
 
 async def require_user(user: User | None = Depends(get_current_user)) -> User:
     """Dependency that 401s when there is no logged-in user."""
     if user is None:
         raise AuthError()
+    return user
+
+
+async def mint_token(user: User) -> str:
+    """Create a new API token for ``user`` and return its plaintext (once)."""
+    plaintext = "mp_" + secrets.token_urlsafe(32)
+    await ApiToken(
+        user_id=user.id,
+        token_hash=_hash_token(plaintext),
+        prefix=plaintext[:11],
+    ).insert()
+    return plaintext
+
+
+async def require_token_user(request: Request) -> User:
+    """Resolve the user from an ``Authorization: Bearer <token>`` header.
+
+    Used by CLI-facing endpoints (engine upload) where there is no browser
+    session. 401s on a missing or unknown token.
+    """
+    user = await _user_from_bearer(request)
+    if user is None:
+        raise AuthError("missing or invalid bearer token")
     return user
 
 
@@ -124,6 +168,14 @@ async def github_callback(request: Request, code: str, state: str) -> RedirectRe
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(require_user)) -> User:
     return user
+
+
+@router.post("/me/tokens", response_model=TokenOut)
+async def create_token(user: User = Depends(require_user)) -> TokenOut:
+    """Mint a CLI API token for the logged-in user (shown once)."""
+    plaintext = await mint_token(user)
+    logger.info("minted api token for user=%s", user.login)
+    return TokenOut(token=plaintext)
 
 
 @router.post("/auth/logout")

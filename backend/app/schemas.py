@@ -45,6 +45,38 @@ class EngineOut(BaseModel):
     name: str
     command: str
     description: str
+    owner_login: str | None = None
+    version_count: int = 0
+
+
+class EngineVersionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    version: str
+    size_bytes: int
+    created_at: datetime
+
+
+class EngineDetailOut(BaseModel):
+    id: UUID
+    name: str
+    description: str
+    owner_login: str | None
+    created_at: datetime
+    versions: list[EngineVersionOut]
+
+
+class EngineUploadResponse(BaseModel):
+    engine_id: UUID
+    name: str
+    owner_login: str | None
+    version: str
+    url: str
+
+
+class TokenOut(BaseModel):
+    token: str
 
 
 class LiveStreamEvent(BaseModel):
