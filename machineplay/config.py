@@ -14,10 +14,23 @@ FASTCHESS_PATH = os.environ.get("FASTCHESS_PATH", "fastchess")
 API_BASE_URL = os.environ.get("MACHINEPLAY_API_URL", "https://api.machineplay.org")
 WEB_URL = os.environ.get("MACHINEPLAY_WEB_URL", "https://machineplay.org")
 
-# Docker registry engines are pushed to. `machineplay login` runs `docker login`
-# against this host with the API token, and `machineplay upload` tags/pushes
-# images here as `<host>/<login>/<engine>:<version>`.
+# Docker registry engines are pushed to and pulled from. `machineplay login`
+# runs `docker login` against this host with the API token, `machineplay upload`
+# tags/pushes images here as `<host>/<login>/<engine>:<version>`, and the runner
+# pulls `<host>/<repository>@<digest>` to play them. A co-located runner can
+# point this at the local registry (e.g. `127.0.0.1:5000`); a remote runner pulls
+# over the public host (pulls are public, no auth needed).
 REGISTRY_HOST = os.environ.get("MACHINEPLAY_REGISTRY", "registry.machineplay.org")
+
+# Per-engine container resource limits, passed to `docker run`. Each engine
+# plays in its own sandboxed container; these cap what one can consume.
+ENGINE_MEMORY = os.environ.get("ENGINE_MEMORY", "512m")
+ENGINE_CPUS = os.environ.get("ENGINE_CPUS", "1")
+
+
+def pull_ref(repository: str, digest: str) -> str:
+    """Fully-qualified, digest-pinned image reference the runner pulls/runs."""
+    return f"{REGISTRY_HOST}/{repository}@{digest}"
 
 # Reconnect backoff (seconds). Full jitter: sleep ~ U(0, delay), delay doubles
 # up to RECONNECT_MAX. A session that stayed up at least RECONNECT_RESET_AFTER

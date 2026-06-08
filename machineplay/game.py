@@ -9,7 +9,7 @@ import chess
 import chess.pgn
 
 from machineplay import schemas
-from machineplay.config import FASTCHESS_PATH
+from machineplay.config import ENGINE_CPUS, ENGINE_MEMORY, FASTCHESS_PATH, pull_ref
 
 # fastchess engine-log format: "<--- go ... wtime X ... btime Y" (sent to engine)
 _GO_RE = re.compile(r"<---\s+go\b.*\bwtime\s+(\d+).*\bbtime\s+(\d+)")
@@ -20,6 +20,50 @@ _BESTMOVE_RE = re.compile(r"--->\s+bestmove\s+([a-h][1-8][a-h][1-8][qrbn]?|0000)
 def parse_tc(spec: str) -> tuple[float, float]:
     base, _, inc = spec.partition("+")
     return float(base), float(inc) if inc else 0.0
+
+
+def docker_run_args(ref: str, name: str) -> str:
+    """fastchess `args=` value that runs the engine image as a sandboxed container.
+
+    The container speaks UCI over stdio (`-i`), has no network, drops all
+    capabilities, and is capped on memory/cpu. It's given an explicit `--name`
+    so an aborted game can force-remove it (killing fastchess would otherwise
+    orphan the container). fastchess launches `docker` with these args (one
+    container per engine) and pipes the UCI protocol through.
+    """
+    return (
+        f"run --rm -i --network none --name {name} "
+        f"--memory {ENGINE_MEMORY} --cpus {ENGINE_CPUS} "
+        f"--cap-drop ALL --security-opt no-new-privileges {ref}"
+    )
+
+
+async def docker_pull(ref: str) -> str | None:
+    """Pull an image. Returns None on success, or docker's output on failure."""
+    proc = await asyncio.create_subprocess_exec(
+        "docker",
+        "pull",
+        ref,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return out.decode(errors="replace").strip()
+    return None
+
+
+async def docker_rm(name: str) -> None:
+    """Best-effort force-remove of a (possibly already-gone) container."""
+    proc = await asyncio.create_subprocess_exec(
+        "docker",
+        "rm",
+        "-f",
+        name,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
 
 
 class Game:
@@ -152,18 +196,39 @@ class Game:
         )
         await self.send_server(self.snapshot())
 
+        white_ref = pull_ref(self.white.repository, self.white.digest)
+        black_ref = pull_ref(self.black.repository, self.black.digest)
+
+        # Pull both images up front so a slow first pull can't trip fastchess's
+        # engine-startup timeout, and pull failures surface as a clean game end.
+        for ref in dict.fromkeys((white_ref, black_ref)):
+            print(f"pulling {ref}")
+            if (err := await docker_pull(ref)) is not None:
+                print(f"pull failed for {ref}: {err}")
+                self.status = schemas.GameStatus.ENDED
+                self.result = "*"
+                await self.send_server(
+                    schemas.GameEndEvent(result="*", pgn=None)
+                )
+                return
+
         pgn_text = ""
         with tempfile.TemporaryDirectory() as tmpdir:
             pgn_path = os.path.join(tmpdir, "game.pgn")
             log_path = os.path.join(tmpdir, "engine.log")
 
+            white_container = f"mp-{self.game_id}-w"
+            black_container = f"mp-{self.game_id}-b"
+
             cmd = [
                 FASTCHESS_PATH,
                 "-engine",
-                f"cmd={self.white.command}",
+                "cmd=docker",
+                f"args={docker_run_args(white_ref, white_container)}",
                 "name=White",
                 "-engine",
-                f"cmd={self.black.command}",
+                "cmd=docker",
+                f"args={docker_run_args(black_ref, black_container)}",
                 "name=Black",
                 "-each",
                 f"tc={self.tc}",
@@ -201,6 +266,10 @@ class Game:
                 if proc.returncode is None:
                     proc.kill()
                     await proc.wait()
+                # Killing fastchess orphans its `docker run` children, so the
+                # containers keep running; force-remove them explicitly.
+                await docker_rm(white_container)
+                await docker_rm(black_container)
                 raise
 
             if os.path.exists(pgn_path):

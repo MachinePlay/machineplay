@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 class EngineConfig(BaseModel):
     name: str
-    command: str
+    # Docker image coordinates the runner plays from. `repository` is the
+    # registry-relative path (e.g. "alice/myengine"), `digest` pins the exact
+    # image ("sha256:…"); the runner forms `<registry>/<repository>@<digest>`.
+    repository: str
+    digest: str
 
 
 class StartGame(BaseModel):
