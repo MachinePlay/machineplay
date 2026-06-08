@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import webbrowser
 
-from machineplay import api, credentials, upload
+from machineplay import api, config, credentials, upload
 from machineplay.client import run_forever
 from machineplay.config import WEB_URL
 
@@ -35,6 +35,16 @@ def cmd_login(_args: argparse.Namespace) -> None:
     login = me.get("login", "")
     path = credentials.save(credentials.Credentials(token=token, login=login))
     print(f"Logged in as {login} (saved to {path})")
+
+    # Also authenticate docker so `machineplay upload` can push straight to the
+    # registry. Non-fatal: the API token is already saved, so `whoami` works
+    # even if docker isn't running yet.
+    if upload.docker_login(token, login):
+        print(f"docker authenticated with {config.REGISTRY_HOST}")
+    else:
+        print("note: `docker login` did not complete. Make sure docker is "
+              "installed and running, then run `machineplay login` again "
+              "before uploading.")
 
 
 def cmd_logout(_args: argparse.Namespace) -> None:

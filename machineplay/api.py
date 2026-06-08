@@ -1,6 +1,5 @@
 """Thin HTTP client for the machineplay REST API (CLI login/upload)."""
 
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -36,17 +35,26 @@ def get_me(token: str) -> dict[str, Any]:
     return resp.json()
 
 
-def upload_engine(
-    token: str, name: str, version: str, tar_path: Path
+def register_engine(
+    token: str,
+    name: str,
+    version: str,
+    repository: str,
+    digest: str,
+    size_bytes: int,
 ) -> dict[str, Any]:
-    """Upload a `docker save` tarball as engine `<name>` version `version`."""
-    with tar_path.open("rb") as f:
-        resp = httpx.post(
-            f"{API_BASE_URL}/engine/upload",
-            headers={"Authorization": f"Bearer {token}"},
-            data={"name": name, "version": version},
-            files={"image": (tar_path.name, f, "application/x-tar")},
-            timeout=None,
-        )
+    """Record a pushed registry image as engine `<name>` version `version`."""
+    resp = httpx.post(
+        f"{API_BASE_URL}/engine/register",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": name,
+            "version": version,
+            "repository": repository,
+            "digest": digest,
+            "size_bytes": size_bytes,
+        },
+        timeout=30.0,
+    )
     _raise_for_status(resp)
     return resp.json()
