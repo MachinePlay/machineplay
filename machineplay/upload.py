@@ -3,8 +3,11 @@
 Flow:
   1. require a saved token (`machineplay login`)
   2. `docker build` the Dockerfile in the current directory
-  3. read the engine name from the UCI `id name` reply
-  4. ask for a version (default: timestamp)
+  3. smoke-test the image: send `uci`, expect an `id name` reply
+  4. ask for the engine name (default: current directory name) and a version
+     (default: timestamp). The name groups versions: uploading under the same
+     name again adds a version to the same engine, so keep it stable — don't
+     bake a release number into it.
   5. tag the image as `<registry>/<login>/<slug>:<version>`, `docker push` it,
      then tell the API to record the engine version (repository + digest)
 
@@ -61,7 +64,13 @@ def docker_login(token: str, login: str) -> bool:
 
 
 def _read_engine_name() -> str:
-    """Run the built image and parse the UCI `id name` reply."""
+    """Run the built image and parse the UCI `id name` reply.
+
+    A smoke test that the image actually speaks UCI over stdio; the reply is
+    only shown as info. It is NOT used as the engine name — it usually embeds
+    a release number ("Stockfish 17.1"), which would split every release into
+    a separate engine instead of versions of one.
+    """
     proc = subprocess.run(
         ["docker", "run", "--rm", "-i", LOCAL_TAG],
         input="uci\nquit\n",
@@ -127,8 +136,11 @@ def do_upload() -> None:
     if subprocess.run(["docker", "build", "-t", LOCAL_TAG, "."]).returncode != 0:
         _fail("docker build failed.")
 
-    name = _read_engine_name()
-    print(f"engine name (from UCI id): {name}")
+    uci_name = _read_engine_name()
+    print(f"UCI id name: {uci_name}")
+
+    default_name = Path.cwd().name
+    name = input(f"engine name [{default_name}]: ").strip() or default_name
 
     default_version = datetime.now().strftime("%Y-%m-%d-%H-%M")
     version = input(f"version [{default_version}]: ").strip() or default_version
