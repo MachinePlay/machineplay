@@ -26,6 +26,29 @@ class _Terminated(Exception):
     """Raised when the server sends an explicit 'exit' command (stop for good)."""
 
 
+def _game_done(
+    task: asyncio.Task,
+    game_id: UUID,
+    games: dict[UUID, "Game"],
+    scheduled_commands: asyncio.Queue,
+) -> None:
+    """Drop a finished game; if its task crashed, still report a game end.
+
+    Without this, an unexpected exception in `Game.play_game` (e.g. docker
+    missing from PATH) is swallowed by asyncio and the server's game stays
+    'playing' forever.
+    """
+    games.pop(game_id, None)
+    if task.cancelled() or (exc := task.exception()) is None:
+        return
+    print(f"game {game_id} crashed: {exc!r}")
+    scheduled_commands.put_nowait(
+        schemas.GameEvent(
+            game_id=game_id, event=schemas.GameEndEvent(result="*", pgn=None)
+        )
+    )
+
+
 async def connect_backend_ws(ssl_ctx, on_connected):
     print(f"connecting to {BACKEND_URL}")
     async with connect(BACKEND_URL, ssl=ssl_ctx) as ws:
@@ -65,7 +88,9 @@ async def connect_backend_ws(ssl_ctx, on_connected):
                         game = Game(game_id, white, black, tc, scheduled_commands)
                         games[game_id] = game
                         game.task.add_done_callback(
-                            lambda _t, gid=game_id: games.pop(gid, None)
+                            lambda t, gid=game_id: _game_done(
+                                t, gid, games, scheduled_commands
+                            )
                         )
                     case schemas.StopGame():
                         print("stop_game")
