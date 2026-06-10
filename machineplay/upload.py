@@ -139,7 +139,9 @@ def do_upload() -> None:
     uci_name = _read_engine_name()
     print(f"UCI id name: {uci_name}")
 
-    default_name = Path.cwd().name
+    # Slugified: the backend requires URL-safe lowercase names — they live at
+    # machineplay.org/{login}/{engine}.
+    default_name = _slugify(Path.cwd().name)
     name = input(f"engine name [{default_name}]: ").strip() or default_name
 
     default_version = datetime.now().strftime("%Y-%m-%d-%H-%M")
