@@ -86,11 +86,25 @@ GameStreamEvent = Annotated[
 ]
 
 
+class HardwareInfo(BaseModel):
+    """Static hardware description a runner reports once, in its Introduction.
+
+    Persisted on the backend's Runner doc so it shows even while offline. GPU
+    fields can be added here later as a purely additive change.
+    """
+
+    cpu_model: str
+    cpu_physical_cores: int
+    cpu_logical_cores: int
+    ram_total_bytes: int
+
+
 class Introduction(BaseModel):
     cmd: Literal["intro"] = "intro"
     runner_id: UUID
     name: str
     max_games: int
+    hardware: HardwareInfo
 
 
 class GameEvent(BaseModel):
@@ -99,6 +113,19 @@ class GameEvent(BaseModel):
     event: GameStreamEvent
 
 
-type ClientCommandType = Introduction | GameEvent
+class Telemetry(BaseModel):
+    """Live resource utilization a runner reports periodically while connected.
+
+    Kept in memory on the backend (meaningful only while online) and fanned out
+    over the runner SSE stream; not persisted.
+    """
+
+    cmd: Literal["telemetry"] = "telemetry"
+    cpu_percent: float
+    ram_used_bytes: int
+    ram_percent: float
+
+
+type ClientCommandType = Introduction | GameEvent | Telemetry
 ClientCommand = Annotated[ClientCommandType, Field(discriminator="cmd")]
 client_adapter = TypeAdapter(ClientCommand)

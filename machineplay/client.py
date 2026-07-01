@@ -7,7 +7,7 @@ from uuid import UUID
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
-from machineplay import credentials, schemas
+from machineplay import credentials, hardware, schemas
 from machineplay.config import (
     BACKEND_URL,
     MAX_GAMES,
@@ -15,6 +15,7 @@ from machineplay.config import (
     RECONNECT_MAX,
     RECONNECT_RESET_AFTER,
     RUNNER_ID,
+    TELEMETRY_INTERVAL,
     make_ssl_context,
 )
 from machineplay.game import Game
@@ -65,7 +66,10 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
     headers = {"Authorization": f"Bearer {token}"}
     async with connect(BACKEND_URL, ssl=ssl_ctx, additional_headers=headers) as ws:
         intro = schemas.Introduction(
-            runner_id=RUNNER_ID, name=socket.gethostname(), max_games=MAX_GAMES
+            runner_id=RUNNER_ID,
+            name=socket.gethostname(),
+            max_games=MAX_GAMES,
+            hardware=hardware.read_hardware(),
         )
         await ws.send(intro.model_dump_json())
         print("connected")
@@ -115,12 +119,20 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                 cmd = await scheduled_commands.get()
                 await ws.send(cmd.model_dump_json())
 
+        async def telemetry():
+            # Report CPU/RAM utilization on a timer via the same outgoing queue.
+            hardware.prime_cpu_percent()
+            while True:
+                await asyncio.sleep(TELEMETRY_INTERVAL)
+                await scheduled_commands.put(hardware.read_telemetry())
+
         recv_task = asyncio.create_task(receiver())
         send_task = asyncio.create_task(sender())
+        telemetry_task = asyncio.create_task(telemetry())
 
         try:
             done, _ = await asyncio.wait(
-                {recv_task, send_task},
+                {recv_task, send_task, telemetry_task},
                 return_when=asyncio.FIRST_EXCEPTION,
             )
             for task in done:
@@ -128,6 +140,7 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
         finally:
             recv_task.cancel()
             send_task.cancel()
+            telemetry_task.cancel()
             # Abandon in-flight games so their fastchess subprocesses don't
             # outlive the connection; the server reschedules on reconnect.
             for game in games.values():

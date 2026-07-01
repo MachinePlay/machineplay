@@ -29,6 +29,9 @@ _env_runner_id = os.environ.get("RUNNER_ID")
 RUNNER_ID = UUID(_env_runner_id) if _env_runner_id else _load_or_create_runner_id()
 BACKEND_URL = os.environ.get("BACKEND_URL", "wss://api.machineplay.org/ws")
 MAX_GAMES = int(os.environ.get("MAX_GAMES") or (os.cpu_count() or 1))
+
+# How often (seconds) the runner samples and reports CPU/RAM utilization.
+TELEMETRY_INTERVAL = float(os.environ.get("TELEMETRY_INTERVAL", "2.0"))
 FASTCHESS_PATH = os.environ.get("FASTCHESS_PATH", "fastchess")
 
 # REST API base for the CLI dev tool (login/upload). The website the user logs
