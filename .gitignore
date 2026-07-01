@@ -1,3 +1,8 @@
+# Project specific ignores
+#   artifact from fastchess
+config.json
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
