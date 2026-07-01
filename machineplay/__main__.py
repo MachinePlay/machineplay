@@ -42,9 +42,11 @@ def cmd_login(_args: argparse.Namespace) -> None:
     if upload.docker_login(token, login):
         print(f"docker authenticated with {config.REGISTRY_HOST}")
     else:
-        print("note: `docker login` did not complete. Make sure docker is "
-              "installed and running, then run `machineplay login` again "
-              "before uploading.")
+        print(
+            "note: `docker login` did not complete. Make sure docker is "
+            "installed and running, then run `machineplay login` again "
+            "before uploading."
+        )
 
 
 def cmd_logout(_args: argparse.Namespace) -> None:
@@ -66,7 +68,7 @@ def cmd_upload(_args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="machineplay")
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("run", help="run the tournament runner (default)")
+    sub.add_parser("runner", help="run the tournament runner")
     sub.add_parser("login", help="authenticate this machine with an API token")
     sub.add_parser("logout", help="forget saved credentials")
     sub.add_parser("whoami", help="show the logged-in user")
@@ -74,14 +76,17 @@ def main() -> None:
 
     args = parser.parse_args()
     handlers = {
-        "run": cmd_run,
+        "runner": cmd_run,
         "login": cmd_login,
         "logout": cmd_logout,
         "whoami": cmd_whoami,
         "upload": cmd_upload,
     }
-    # No subcommand → run the runner, preserving the deployed service's entrypoint.
-    handlers.get(args.command, cmd_run)(args)
+    # No subcommand → show help. The runner is started explicitly with
+    if args.command is None:
+        parser.print_help()
+        return
+    handlers[args.command](args)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
-# Run the tournament runner locally (default `machineplay` entrypoint).
+# Run the tournament runner locally.
 run:
-    uv run machineplay
+    uv run machineplay runner
 
 # Pull & restart the runner on the VPS (see deploy-machineplay-cli in malganis).
 deploy:
