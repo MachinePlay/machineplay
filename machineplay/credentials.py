@@ -15,14 +15,16 @@ class Credentials(NamedTuple):
     login: str
 
 
-def _config_dir() -> Path:
+def config_dir() -> Path:
+    """``${XDG_CONFIG_HOME:-~/.config}/machineplay`` — the per-user config dir
+    shared by the CLI credentials and the runner's persisted id."""
     base = os.environ.get("XDG_CONFIG_HOME")
     root = Path(base) if base else Path.home() / ".config"
     return root / "machineplay"
 
 
 def _path() -> Path:
-    return _config_dir() / "credentials.json"
+    return config_dir() / "credentials.json"
 
 
 def load() -> Credentials | None:

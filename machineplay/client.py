@@ -1,4 +1,5 @@
 import asyncio
+import os
 import random
 import socket
 from uuid import UUID
@@ -6,7 +7,7 @@ from uuid import UUID
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
-from machineplay import schemas
+from machineplay import credentials, schemas
 from machineplay.config import (
     BACKEND_URL,
     MAX_GAMES,
@@ -49,9 +50,20 @@ def _game_done(
     )
 
 
-async def connect_backend_ws(ssl_ctx, on_connected):
+def _load_token() -> str | None:
+    """The API token the runner authenticates with. Prefer ``MP_TOKEN`` (set on
+    the production runner's systemd unit) over the CLI's saved credentials."""
+    env = os.environ.get("MP_TOKEN")
+    if env:
+        return env
+    creds = credentials.load()
+    return creds.token if creds else None
+
+
+async def connect_backend_ws(ssl_ctx, token, on_connected):
     print(f"connecting to {BACKEND_URL}")
-    async with connect(BACKEND_URL, ssl=ssl_ctx) as ws:
+    headers = {"Authorization": f"Bearer {token}"}
+    async with connect(BACKEND_URL, ssl=ssl_ctx, additional_headers=headers) as ws:
         intro = schemas.Introduction(
             runner_id=RUNNER_ID, name=socket.gethostname(), max_games=MAX_GAMES
         )
@@ -123,6 +135,14 @@ async def connect_backend_ws(ssl_ctx, on_connected):
 
 
 async def run_forever():
+    token = _load_token()
+    if not token:
+        print(
+            "no API token found. Run `machineplay login` on this machine, "
+            "or set MP_TOKEN in the environment."
+        )
+        raise SystemExit(1)
+
     ssl_ctx = make_ssl_context()
     loop = asyncio.get_running_loop()
     delay = RECONNECT_BASE
@@ -135,7 +155,7 @@ async def run_forever():
             connected_at = loop.time()
 
         try:
-            await connect_backend_ws(ssl_ctx, on_connected)
+            await connect_backend_ws(ssl_ctx, token, on_connected)
             return  # connect_backend_ws only returns on a clean close
         except _Terminated:
             print("terminated by server")

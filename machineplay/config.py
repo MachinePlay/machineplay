@@ -1,10 +1,32 @@
+import json
 import os
 import ssl
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import certifi
 
-RUNNER_ID = uuid4()
+from machineplay.credentials import config_dir
+
+
+def _load_or_create_runner_id() -> UUID:
+    """The runner's stable id, persisted so it survives restarts.
+
+    A fresh uuid4 every start would register a brand-new runner in the backend on
+    each restart, so we persist it to ``~/.config/machineplay/runner.json`` and
+    reuse it. Set ``RUNNER_ID`` in the environment to pin it explicitly (the
+    production runner does this declaratively via its systemd unit)."""
+    path = config_dir() / "runner.json"
+    try:
+        return UUID(json.loads(path.read_text())["runner_id"])
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        runner_id = uuid4()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"runner_id": str(runner_id)}))
+        return runner_id
+
+
+_env_runner_id = os.environ.get("RUNNER_ID")
+RUNNER_ID = UUID(_env_runner_id) if _env_runner_id else _load_or_create_runner_id()
 BACKEND_URL = os.environ.get("BACKEND_URL", "wss://api.machineplay.org/ws")
 MAX_GAMES = int(os.environ.get("MAX_GAMES") or (os.cpu_count() or 1))
 FASTCHESS_PATH = os.environ.get("FASTCHESS_PATH", "fastchess")
