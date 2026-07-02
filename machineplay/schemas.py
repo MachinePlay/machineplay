@@ -24,6 +24,7 @@ class StartGame(BaseModel):
 
 class StopGame(BaseModel):
     cmd: Literal["stop_game"] = "stop_game"
+    game_id: UUID
 
 
 class Terminate(BaseModel):
@@ -78,6 +79,12 @@ class GameEndEvent(BaseModel):
     type: Literal["game_end"] = "game_end"
     result: str | None
     pgn: str | None = None
+    # Terminal status: ENDED for games that ran to a result, ABORTED for games
+    # cut short (crash, cancel, disconnect, wallclock kill). Standings should
+    # only count ENDED games.
+    status: GameStatus = GameStatus.ENDED
+    # Human-readable termination detail ("time forfeit", "cancelled", …).
+    reason: str | None = None
 
 
 GameStreamEvent = Annotated[

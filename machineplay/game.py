@@ -9,7 +9,13 @@ import chess
 import chess.pgn
 
 from machineplay import schemas
-from machineplay.config import ENGINE_CPUS, ENGINE_MEMORY, FASTCHESS_PATH, pull_ref
+from machineplay.config import (
+    ENGINE_CPUS,
+    ENGINE_MEMORY,
+    FASTCHESS_PATH,
+    PULL_TIMEOUT,
+    pull_ref,
+)
 
 # fastchess engine-log format: "<--- go ... wtime X ... btime Y" (sent to engine)
 _GO_RE = re.compile(r"<---\s+go\b.*\bwtime\s+(\d+).*\bbtime\s+(\d+)")
@@ -39,7 +45,10 @@ def docker_run_args(ref: str, name: str) -> str:
 
 
 async def docker_pull(ref: str) -> str | None:
-    """Pull an image. Returns None on success, or docker's output on failure."""
+    """Pull an image. Returns None on success, or docker's output on failure.
+
+    Capped at PULL_TIMEOUT so a wedged pull can't hold a game slot forever.
+    """
     proc = await asyncio.create_subprocess_exec(
         "docker",
         "pull",
@@ -47,7 +56,12 @@ async def docker_pull(ref: str) -> str | None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    out, _ = await proc.communicate()
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=PULL_TIMEOUT)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return f"pull timed out after {PULL_TIMEOUT:.0f}s"
     if proc.returncode != 0:
         return out.decode(errors="replace").strip()
     return None
@@ -205,10 +219,15 @@ class Game:
             print(f"pulling {ref}")
             if (err := await docker_pull(ref)) is not None:
                 print(f"pull failed for {ref}: {err}")
-                self.status = schemas.GameStatus.ENDED
+                self.status = schemas.GameStatus.ABORTED
                 self.result = "*"
                 await self.send_server(
-                    schemas.GameEndEvent(result="*", pgn=None)
+                    schemas.GameEndEvent(
+                        result="*",
+                        pgn=None,
+                        status=schemas.GameStatus.ABORTED,
+                        reason="image pull failed",
+                    )
                 )
                 return
 
@@ -258,10 +277,8 @@ class Game:
             )
 
             log_task = asyncio.create_task(self._stream_log(log_path, proc, inc))
-            try:
-                await proc.communicate()
-                await log_task
-            except asyncio.CancelledError:
+
+            async def _kill_fastchess() -> None:
                 log_task.cancel()
                 if proc.returncode is None:
                     proc.kill()
@@ -270,18 +287,49 @@ class Game:
                 # containers keep running; force-remove them explicitly.
                 await docker_rm(white_container)
                 await docker_rm(black_container)
+
+            # Safety net: fastchess normally ends the game on its own (time
+            # forfeit etc.), but a hung container/pipe would hold this slot
+            # forever. Cap the whole game at what the clocks could plausibly
+            # use (300 moves/side) plus generous startup slack.
+            wallclock = 2 * (base + 300 * inc) + 120
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=wallclock)
+                await log_task
+            except TimeoutError:
+                print(f"game {self.game_id} exceeded wallclock ({wallclock:.0f}s)")
+                await _kill_fastchess()
+                self.status = schemas.GameStatus.ABORTED
+                self.result = "*"
+                await self.send_server(
+                    schemas.GameEndEvent(
+                        result="*",
+                        pgn=None,
+                        status=schemas.GameStatus.ABORTED,
+                        reason="wallclock timeout",
+                    )
+                )
+                return
+            except asyncio.CancelledError:
+                await _kill_fastchess()
                 raise
 
+            reason: str | None = None
             if os.path.exists(pgn_path):
                 with open(pgn_path) as f:
                     pgn_text = f.read()
                 game_obj = chess.pgn.read_game(io.StringIO(pgn_text))
                 self.result = game_obj.headers.get("Result", "*") if game_obj else "*"
+                # fastchess records how the game ended ("time forfeit", …).
+                if game_obj is not None:
+                    reason = game_obj.headers.get("Termination")
             else:
                 self.result = "*"
 
         self.status = schemas.GameStatus.ENDED
         print(f"game ended result={self.result} plies={self.board.ply()}")
         await self.send_server(
-            schemas.GameEndEvent(result=self.result, pgn=pgn_text or None)
+            schemas.GameEndEvent(
+                result=self.result, pgn=pgn_text or None, reason=reason
+            )
         )

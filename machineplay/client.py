@@ -28,26 +28,42 @@ class _Terminated(Exception):
     """Raised when the server sends an explicit 'exit' command (stop for good)."""
 
 
+def _abort_event(game_id: UUID, reason: str) -> schemas.GameEvent:
+    return schemas.GameEvent(
+        game_id=game_id,
+        event=schemas.GameEndEvent(
+            result="*",
+            pgn=None,
+            status=schemas.GameStatus.ABORTED,
+            reason=reason,
+        ),
+    )
+
+
 def _game_done(
     task: asyncio.Task,
     game_id: UUID,
     games: dict[UUID, "Game"],
     scheduled_commands: asyncio.Queue,
 ) -> None:
-    """Drop a finished game; if its task crashed, still report a game end.
+    """Drop a finished game; if its task was cancelled or crashed, still report
+    a game end.
 
     Without this, an unexpected exception in `Game.play_game` (e.g. docker
     missing from PATH) is swallowed by asyncio and the server's game stays
-    'playing' forever.
+    'playing' forever. (On connection teardown the events land on the dying
+    session's queue and go nowhere, which is fine — the backend aborts that
+    session's games itself.)
     """
     games.pop(game_id, None)
-    if task.cancelled() or (exc := task.exception()) is None:
+    if task.cancelled():
+        scheduled_commands.put_nowait(_abort_event(game_id, "stopped on runner"))
+        return
+    if (exc := task.exception()) is None:
         return
     print(f"game {game_id} crashed: {exc!r}")
     scheduled_commands.put_nowait(
-        schemas.GameEvent(
-            game_id=game_id, event=schemas.GameEndEvent(result="*", pgn=None)
-        )
+        _abort_event(game_id, f"runner error: {type(exc).__name__}")
     )
 
 
@@ -94,10 +110,7 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                                 f"refusing start_game {game_id}: at capacity ({len(games)}/{MAX_GAMES})"
                             )
                             await scheduled_commands.put(
-                                schemas.GameEvent(
-                                    game_id=game_id,
-                                    event=schemas.GameEndEvent(result="*", pgn=None),
-                                )
+                                _abort_event(game_id, "runner at capacity")
                             )
                             continue
                         print(f"start_game {game_id} {white.name} vs {black.name}")
@@ -108,8 +121,15 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                                 t, gid, games, scheduled_commands
                             )
                         )
-                    case schemas.StopGame():
-                        print("stop_game")
+                    case schemas.StopGame(game_id=game_id):
+                        game = games.get(game_id)
+                        if game is None:
+                            print(f"stop_game {game_id}: not running here")
+                        else:
+                            print(f"stop_game {game_id}")
+                            # Cancellation kills fastchess + containers; the
+                            # done-callback reports the aborted game end.
+                            game.task.cancel()
                     case schemas.Terminate():
                         print("exit")
                         raise _Terminated
@@ -142,7 +162,8 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
             send_task.cancel()
             telemetry_task.cancel()
             # Abandon in-flight games so their fastchess subprocesses don't
-            # outlive the connection; the server reschedules on reconnect.
+            # outlive the connection; the backend marks them aborted when it
+            # notices the disconnect.
             for game in games.values():
                 game.task.cancel()
 

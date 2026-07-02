@@ -52,10 +52,16 @@ REGISTRY_HOST = os.environ.get("MACHINEPLAY_REGISTRY", "registry.machineplay.org
 ENGINE_MEMORY = os.environ.get("ENGINE_MEMORY", "512m")
 ENGINE_CPUS = os.environ.get("ENGINE_CPUS", "1")
 
+# Safety-net timeouts (seconds). A wedged `docker pull` or a hung fastchess
+# would otherwise hold a game slot forever; the wallclock cap for a game is
+# derived from its time control in game.py, PULL_TIMEOUT applies per image.
+PULL_TIMEOUT = float(os.environ.get("PULL_TIMEOUT", "600"))
+
 
 def pull_ref(repository: str, digest: str) -> str:
     """Fully-qualified, digest-pinned image reference the runner pulls/runs."""
     return f"{REGISTRY_HOST}/{repository}@{digest}"
+
 
 # Reconnect backoff (seconds). Full jitter: sleep ~ U(0, delay), delay doubles
 # up to RECONNECT_MAX. A session that stayed up at least RECONNECT_RESET_AFTER
