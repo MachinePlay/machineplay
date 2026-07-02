@@ -19,7 +19,10 @@ class StartGame(BaseModel):
     game_id: UUID
     white: EngineConfig
     black: EngineConfig
-    tc: str = "30+0.3"
+    # Time control "base+inc" in seconds. Required on the wire: the backend
+    # always sets it, so the default lives in one place (backend settings.tc)
+    # rather than being duplicated here.
+    tc: str
 
 
 class StopGame(BaseModel):
@@ -37,6 +40,11 @@ server_adapter = TypeAdapter(ServerCommand)
 
 
 class GameStatus(StrEnum):
+    # Created and pinned (engines/versions/tc) but not yet dispatched to a
+    # runner: the pre-dispatch state for tournament pairings waiting on a free
+    # slot. The runner never emits this — the backend sets it on create and
+    # flips it to PLAYING when the game is scheduled onto a runner.
+    PENDING = "pending"
     PLAYING = "playing"
     ENDED = "ended"
     ABORTED = "aborted"
