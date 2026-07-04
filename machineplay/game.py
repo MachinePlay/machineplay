@@ -10,6 +10,7 @@ import chess.pgn
 
 from machineplay import schemas
 from machineplay.config import (
+    AVAILABLE_CPUS,
     ENGINE_CPUS,
     ENGINE_MEMORY,
     FASTCHESS_PATH,
@@ -28,7 +29,7 @@ def parse_tc(spec: str) -> tuple[float, float]:
     return float(base), float(inc) if inc else 0.0
 
 
-def docker_run_args(ref: str, name: str) -> str:
+def docker_run_args(ref: str, name: str, cpu: int) -> str:
     """fastchess `args=` value that runs the engine image as a sandboxed container.
 
     The container speaks UCI over stdio (`-i`), has no network, drops all
@@ -36,10 +37,15 @@ def docker_run_args(ref: str, name: str) -> str:
     so an aborted game can force-remove it (killing fastchess would otherwise
     orphan the container). fastchess launches `docker` with these args (one
     container per engine) and pipes the UCI protocol through.
+
+    Both of a game's containers are pinned to the same dedicated core (`cpu`,
+    from the game's slot): with Ponder off only the side to move computes, so
+    the thinking engine gets the whole core and concurrent games can't contend
+    on wall-clock time controls.
     """
     return (
         f"run --rm -i --network none --name {name} "
-        f"--memory {ENGINE_MEMORY} --cpus {ENGINE_CPUS} "
+        f"--cpuset-cpus {cpu} --memory {ENGINE_MEMORY} --cpus {ENGINE_CPUS} "
         f"--cap-drop ALL --security-opt no-new-privileges {ref}"
     )
 
@@ -88,11 +94,13 @@ class Game:
         black: schemas.EngineConfig,
         tc: str,
         queue: asyncio.Queue,
+        slot: int,
     ):
         self.game_id = game_id
         self.white = white
         self.black = black
         self.tc = tc
+        self.slot = slot
         self.queue: asyncio.Queue[schemas.ClientCommand] = queue
         self.san_moves: list[str] = []
         self.clocks: dict[chess.Color, float] = {chess.WHITE: 0.0, chess.BLACK: 0.0}
@@ -238,16 +246,17 @@ class Game:
 
             white_container = f"mp-{self.game_id}-w"
             black_container = f"mp-{self.game_id}-b"
+            cpu = AVAILABLE_CPUS[self.slot % len(AVAILABLE_CPUS)]
 
             cmd = [
                 FASTCHESS_PATH,
                 "-engine",
                 "cmd=docker",
-                f"args={docker_run_args(white_ref, white_container)}",
+                f"args={docker_run_args(white_ref, white_container, cpu)}",
                 "name=White",
                 "-engine",
                 "cmd=docker",
-                f"args={docker_run_args(black_ref, black_container)}",
+                f"args={docker_run_args(black_ref, black_container, cpu)}",
                 "name=Black",
                 "-each",
                 f"tc={self.tc}",

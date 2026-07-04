@@ -52,6 +52,20 @@ REGISTRY_HOST = os.environ.get("MACHINEPLAY_REGISTRY", "registry.machineplay.org
 ENGINE_MEMORY = os.environ.get("ENGINE_MEMORY", "512m")
 ENGINE_CPUS = os.environ.get("ENGINE_CPUS", "1")
 
+
+def _available_cpus() -> list[int]:
+    """Host CPUs game slots are pinned to (slot i → AVAILABLE_CPUS[i mod n]).
+
+    Respects the runner process's own affinity mask where the platform exposes
+    it, so a systemd `CPUAffinity=` on the unit also confines the engine
+    containers."""
+    if hasattr(os, "sched_getaffinity"):
+        return sorted(os.sched_getaffinity(0))
+    return list(range(os.cpu_count() or 1))
+
+
+AVAILABLE_CPUS = _available_cpus()
+
 # Safety-net timeouts (seconds). A wedged `docker pull` or a hung fastchess
 # would otherwise hold a game slot forever; the wallclock cap for a game is
 # derived from its time control in game.py, PULL_TIMEOUT applies per image.

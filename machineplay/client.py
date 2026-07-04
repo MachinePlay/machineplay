@@ -44,6 +44,7 @@ def _game_done(
     task: asyncio.Task,
     game_id: UUID,
     games: dict[UUID, "Game"],
+    free_slots: set[int],
     scheduled_commands: asyncio.Queue,
 ) -> None:
     """Drop a finished game; if its task was cancelled or crashed, still report
@@ -55,7 +56,8 @@ def _game_done(
     session's queue and go nowhere, which is fine — the backend aborts that
     session's games itself.)
     """
-    games.pop(game_id, None)
+    if (game := games.pop(game_id, None)) is not None:
+        free_slots.add(game.slot)
     if task.cancelled():
         scheduled_commands.put_nowait(_abort_event(game_id, "stopped on runner"))
         return
@@ -93,6 +95,9 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
 
         scheduled_commands: asyncio.Queue[schemas.ClientCommand] = asyncio.Queue()
         games: dict[UUID, Game] = {}
+        # Game slots double as core assignments: slot i pins its game's
+        # containers to AVAILABLE_CPUS[i mod n] (see game.docker_run_args).
+        free_slots: set[int] = set(range(MAX_GAMES))
 
         async def receiver():
             while True:
@@ -105,7 +110,7 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                     case schemas.StartGame(
                         game_id=game_id, white=white, black=black, tc=tc
                     ):
-                        if len(games) >= MAX_GAMES:
+                        if not free_slots:
                             print(
                                 f"refusing start_game {game_id}: at capacity ({len(games)}/{MAX_GAMES})"
                             )
@@ -113,12 +118,16 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                                 _abort_event(game_id, "runner at capacity")
                             )
                             continue
-                        print(f"start_game {game_id} {white.name} vs {black.name}")
-                        game = Game(game_id, white, black, tc, scheduled_commands)
+                        slot = min(free_slots)
+                        free_slots.remove(slot)
+                        print(
+                            f"start_game {game_id} {white.name} vs {black.name} (slot {slot})"
+                        )
+                        game = Game(game_id, white, black, tc, scheduled_commands, slot)
                         games[game_id] = game
                         game.task.add_done_callback(
                             lambda t, gid=game_id: _game_done(
-                                t, gid, games, scheduled_commands
+                                t, gid, games, free_slots, scheduled_commands
                             )
                         )
                     case schemas.StopGame(game_id=game_id):
