@@ -18,7 +18,7 @@ Every external command either role runs is echoed first, so you can see exactly
 what touched your machine:
 
 ```
-> docker build -t machineplay-local:latest .
+> docker build --platform linux/amd64 -t machineplay-local:latest .
 > docker push registry.machineplay.org/alice/myengine:2026-08-08-12-30
 ```
 
@@ -47,6 +47,12 @@ machineplay upload
 uploading under the same name again adds a version to the same engine, so keep
 it stable and don't bake a release number into it. Names are lowercase URL
 slugs: your engine ends up at `machineplay.org/<you>/<engine>`.
+
+Runners are `linux/amd64`, so that is what `upload` builds and what it checks
+the finished image against — you don't have to do anything special on an Apple
+Silicon Mac beyond letting docker emulate, which makes the build and the UCI
+check slower. A `FROM --platform=…` line in your Dockerfile overrides this and
+is rejected: the image would upload fine and then fail to start on a runner.
 
 ## Run a runner
 
@@ -86,6 +92,8 @@ production.
 | `MACHINEPLAY_API_URL` | `https://api.machineplay.org` | REST API for the CLI |
 | `MACHINEPLAY_WEB_URL` | `https://machineplay.org` | website `login` opens |
 | `MACHINEPLAY_REGISTRY` | `registry.machineplay.org` | image registry |
+| `MACHINEPLAY_PLATFORM` | `linux/amd64` | platform `upload` builds engines for |
+| `MACHINEPLAY_UCI_TIMEOUT` | 30s, 120s emulated | seconds `upload` waits for `uci` |
 | `FASTCHESS_PATH` | `fastchess` | fastchess binary |
 | `ENGINE_MEMORY` / `ENGINE_CPUS` | `512m` / `1` | per-engine container limits |
 | `PULL_TIMEOUT` | `600` | seconds before a stuck `docker pull` gives up |

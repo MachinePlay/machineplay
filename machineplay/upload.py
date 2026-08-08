@@ -2,7 +2,9 @@
 
 Flow:
   1. require a saved token (`machineplay login`)
-  2. `docker build` the Dockerfile in the current directory
+  2. `docker build` the Dockerfile in the current directory for the platform
+     runners can exec (`ENGINE_PLATFORM`), then check the image really came out
+     that way
   3. smoke-test the image: send `uci`, expect an `id name` reply
   4. ask for the engine name (default: current directory name) and a version
      (default: timestamp). The name groups versions: uploading under the same
@@ -20,13 +22,14 @@ own namespace.
 """
 
 import json
+import platform
 import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
 from machineplay import api, credentials, log, proc
-from machineplay.config import REGISTRY_HOST, WEB_URL
+from machineplay.config import ENGINE_PLATFORM, REGISTRY_HOST, UCI_TIMEOUT, WEB_URL
 
 LOCAL_TAG = "machineplay-local:latest"
 _ID_NAME_RE = re.compile(r"^id name (.+)$", re.MULTILINE)
@@ -34,7 +37,76 @@ _TAG_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
 # Mirrors ENGINE_NAME_RE in the backend (app/engines.py). Checked here so a bad
 # name fails before a multi-hundred-megabyte push, not after it.
 _ENGINE_NAME_RE = re.compile(r"^[a-z0-9](?:[._-]?[a-z0-9]){0,63}$")
+# `docker build` and `docker run` both default to the host's architecture, so
+# every invocation that produces or executes the image says which platform it
+# means. See ENGINE_PLATFORM in config.py for why it matters.
+_PLATFORM_ARGS = ["--platform", ENGINE_PLATFORM]
+# Emulated builds run an engine through Rosetta/qemu, where answering `uci` can
+# take a lot longer than it does natively.
 _UCI_TIMEOUT = 30.0
+_UCI_TIMEOUT_EMULATED = 120.0
+# `uname -m` and docker disagree on how to spell an architecture.
+_ARCH_ALIASES = {"x86_64": "amd64", "aarch64": "arm64", "armv8": "arm64"}
+
+
+def _arch(name: str) -> str:
+    """Docker's spelling of an architecture name."""
+    arch = name.strip().lower()
+    return _ARCH_ALIASES.get(arch, arch)
+
+
+def _platform_id(value: str) -> str:
+    """`os/arch` from a platform string, dropping any variant (`linux/arm64/v8`)."""
+    os_name, _, rest = value.strip().lower().partition("/")
+    return f"{os_name}/{_arch(rest.partition('/')[0])}"
+
+
+def _emulated() -> bool:
+    """Does docker have to emulate ENGINE_PLATFORM on this machine?
+
+    Containers are always Linux — on macOS and Windows docker runs its own
+    Linux VM — so only the architecture decides this.
+    """
+    return _platform_id(ENGINE_PLATFORM).partition("/")[2] != _arch(platform.machine())
+
+
+def _check_platform() -> None:
+    """Fail before the push if the image isn't stamped for ENGINE_PLATFORM.
+
+    An assertion that `--platform` on the build actually took effect: docker
+    normally honours it, but the platform is what the runner's `docker pull`
+    will trust, and an image the runner can't exec is worth catching here
+    rather than as an aborted game with nothing useful to show for it.
+
+    This reads the platform docker recorded, so it can't see *inside* the
+    image — a Dockerfile whose `FROM --platform=…` pins a foreign base still
+    gets stamped with the build's target platform. The UCI smoke test is what
+    catches that one.
+    """
+    result = proc.run(
+        ["docker", "inspect", "-f", "{{.Os}}/{{.Architecture}}", LOCAL_TAG],
+        capture=True,
+    )
+    built = result.stdout.strip()
+    if not built:
+        log.warn("could not read the built image's platform from `docker inspect`")
+        return
+    if _platform_id(built) != _platform_id(ENGINE_PLATFORM):
+        log.die(
+            f"the image was built for {built}, but machineplay runners are "
+            f"{ENGINE_PLATFORM}.",
+            "an engine of the wrong architecture cannot start on a runner",
+            "if MACHINEPLAY_PLATFORM is set in your environment, unset it",
+        )
+
+
+def _tail(output: str, lines: int = 3) -> str:
+    """The last few lines of a child's output, for a one-line-ish hint.
+
+    (game.py has its own copy for the runner's byte streams; importing it here
+    would pull asyncio and python-chess into every CLI command's startup.)
+    """
+    return " / ".join(output.strip().splitlines()[-lines:])
 
 
 def _slugify(name: str) -> str:
@@ -87,27 +159,48 @@ def _read_engine_name() -> str:
     a release number ("Stockfish 17.1"), which would split every release into
     a separate engine instead of versions of one.
     """
+    emulated = _emulated()
+    timeout = UCI_TIMEOUT or (_UCI_TIMEOUT_EMULATED if emulated else _UCI_TIMEOUT)
     try:
         result = proc.run(
-            ["docker", "run", "--rm", "-i", LOCAL_TAG],
+            ["docker", "run", "--rm", "-i", *_PLATFORM_ARGS, LOCAL_TAG],
             stdin_text="uci\nquit\n",
             capture=True,
-            timeout=_UCI_TIMEOUT,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        log.die(
-            f"the engine did not answer `uci` within {_UCI_TIMEOUT:.0f}s.",
+        hints = [
             "a UCI engine must print `id name …` and `uciok` right after `uci`",
             "check that the image's CMD/ENTRYPOINT starts the engine on stdio",
-        )
+        ]
+        if emulated:
+            hints.append(
+                f"this ran under emulation ({ENGINE_PLATFORM} on "
+                f"{platform.machine()}), which is slow — a heavier engine may "
+                "need MACHINEPLAY_UCI_TIMEOUT raised"
+            )
+        log.die(f"the engine did not answer `uci` within {timeout:.0f}s.", *hints)
     match = _ID_NAME_RE.search(result.stdout)
     if match:
         return match.group(1).strip()
-    log.die(
-        "could not read `id name` from the engine's UCI response.",
+    hints = [
         "the container must read UCI commands on stdin and reply on stdout",
-        f"reproduce with: docker run --rm -i {LOCAL_TAG}",
-    )
+        f"reproduce with: docker run --rm -i {' '.join(_PLATFORM_ARGS)} {LOCAL_TAG}",
+    ]
+    # Whatever the container said is the only evidence of why it said nothing
+    # useful — an engine that crashed on startup prints its traceback here, and
+    # a `FROM --platform=…` line pinning a foreign base shows up as
+    # `exec format error` (docker stamps the image with the build's target
+    # platform, so _check_platform can't see that one).
+    if noise := _tail(result.stderr or result.stdout):
+        hints.append(f"the container said: {noise}")
+        if "exec format error" in result.stderr:
+            hints.append(
+                f"that means the executable inside the image isn't "
+                f"{ENGINE_PLATFORM} — check for a `FROM --platform=…` line in "
+                "your Dockerfile pinning a different architecture"
+            )
+    log.die("could not read `id name` from the engine's UCI response.", *hints)
 
 
 def _image_size() -> int:
@@ -175,9 +268,22 @@ def do_upload() -> None:
         )
 
     log.info(f"building {LOCAL_TAG} from {Path.cwd()}/Dockerfile")
-    if proc.run(["docker", "build", "-t", LOCAL_TAG, "."]).returncode != 0:
-        log.die("docker build failed — see the build output above.")
+    if _emulated():
+        log.info(
+            f"this machine is {platform.machine()}, engines run on "
+            f"{ENGINE_PLATFORM} — docker will emulate, so the build and the "
+            "UCI check take longer than they would natively"
+        )
+    build = ["docker", "build", *_PLATFORM_ARGS, "-t", LOCAL_TAG, "."]
+    if proc.run(build).returncode != 0:
+        log.die(
+            "docker build failed — see the build output above.",
+            f"the image is built for {ENGINE_PLATFORM}, which is what "
+            "machineplay runners are; if a base image has no build for that "
+            "platform, pick one that does",
+        )
 
+    _check_platform()
     log.info(f"UCI id name: {_read_engine_name()}")
 
     # Engine names are URL slugs: they live at machineplay.org/{login}/{engine}.

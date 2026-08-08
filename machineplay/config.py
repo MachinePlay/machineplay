@@ -47,6 +47,21 @@ WEB_URL = os.environ.get("MACHINEPLAY_WEB_URL", "https://machineplay.org")
 # over the public host (pulls are public, no auth needed).
 REGISTRY_HOST = os.environ.get("MACHINEPLAY_REGISTRY", "registry.machineplay.org")
 
+# Platform engine images are built for. Runners are amd64 Linux, and nothing
+# downstream would catch an image that isn't: the runner pulls by digest, and a
+# digest-pinned pull skips docker's platform selection, so a foreign image pulls
+# fine and only dies as `exec format error` once the game starts. `machineplay
+# upload` therefore builds — and verifies — against this. On Apple Silicon that
+# means docker emulates (Rosetta/qemu), which is slower but produces an image
+# runners can actually exec. Override only once a runner on another
+# architecture exists.
+ENGINE_PLATFORM = os.environ.get("MACHINEPLAY_PLATFORM", "linux/amd64")
+
+# Seconds `machineplay upload` gives the built image to answer `uci`. Unset, it
+# picks its own default — a generous one when the image runs emulated.
+_uci_timeout = os.environ.get("MACHINEPLAY_UCI_TIMEOUT")
+UCI_TIMEOUT = float(_uci_timeout) if _uci_timeout else None
+
 # Per-engine container resource limits, passed to `docker run`. Each engine
 # plays in its own sandboxed container; these cap what one can consume.
 ENGINE_MEMORY = os.environ.get("ENGINE_MEMORY", "512m")
