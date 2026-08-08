@@ -28,10 +28,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Pinned to an exact version because setup-uv stopped publishing moving
+      # major tags after v7 — `@v9` does not resolve.
+      #
       # No python-version pin here: uv takes it from .python-version, and the
       # wheel is py3-none-any anyway, so which interpreter builds it doesn't
       # change the artifact. One less copy of a version number to go stale.
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v9.0.0
 
       - run: uv build
 
