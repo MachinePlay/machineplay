@@ -1,10 +1,25 @@
 [project]
 name = "machineplay"
-version = "0.1.0"
-description = "Add your description here"
+# Version lives in machineplay/__init__.py; see [tool.hatch.version] below.
+dynamic = ["version"]
+description = "Play UCI chess engines packaged as Docker images on machineplay.org — CLI and tournament runner"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
-requires-python = ">=3.13.13"
+license-files = ["LICENSE"]
+authors = [{ name = "Saegl", email = "saegl@protonmail.com" }]
+keywords = ["chess", "uci", "engine", "tournament", "docker", "fastchess"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Games/Entertainment :: Board Games",
+]
+# 3.12 is what the code actually needs (PEP 695 `type` aliases in schemas.py);
+# it's also the system python on Ubuntu 24.04 LTS. Development happens on 3.13
+# (.python-version) — this floor is for people installing from PyPI.
+requires-python = ">=3.12"
 dependencies = [
     "certifi>=2026.4.22",
     "chess>=1.11.2",
@@ -14,12 +29,20 @@ dependencies = [
     "websockets>=16.0",
 ]
 
+[project.urls]
+Homepage = "https://machineplay.org"
+Repository = "https://github.com/MachinePlay/machineplay"
+Issues = "https://github.com/MachinePlay/machineplay/issues"
+
 [project.scripts]
 machineplay = "machineplay.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "machineplay/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["machineplay"]

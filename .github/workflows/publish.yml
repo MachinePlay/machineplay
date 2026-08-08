@@ -1,0 +1,70 @@
+# Publish the `machineplay` package to PyPI when a version tag is pushed.
+#
+# Auth is PyPI Trusted Publishing (OIDC): PyPI trusts this exact workflow, so
+# no API token is stored in the repo. One-time setup, at
+# https://pypi.org/manage/account/publishing/ (do this before the first tag —
+# for a project that doesn't exist on PyPI yet, add a *pending* publisher):
+#
+#   PyPI project name:  machineplay
+#   Owner:              MachinePlay
+#   Repository name:    machineplay
+#   Workflow name:      publish.yml
+#   Environment name:   pypi
+#
+# Releasing: bump `__version__` in machineplay/__init__.py, commit, then
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The build job refuses to go on if the tag and the built version disagree.
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # No python-version pin here: uv takes it from .python-version, and the
+      # wheel is py3-none-any anyway, so which interpreter builds it doesn't
+      # change the artifact. One less copy of a version number to go stale.
+      - uses: astral-sh/setup-uv@v9
+
+      - run: uv build
+
+      # Checks the artifacts themselves rather than a version command, so it
+      # can't disagree with what would actually be uploaded.
+      - name: Check the tag matches the built version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tagged=${GITHUB_REF_NAME#v}
+          if [ ! -f "dist/machineplay-${tagged}.tar.gz" ]; then
+            echo "tag $GITHUB_REF_NAME does not match what was built:" >&2
+            ls dist >&2
+            exit 1
+          fi
+
+      - run: uvx twine check dist/*
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Kept separate from the build so only this job — which runs no project
+    # code — can mint the OIDC token PyPI accepts.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
