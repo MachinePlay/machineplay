@@ -2,6 +2,9 @@ import asyncio
 import os
 import random
 import socket
+import ssl
+from collections.abc import Callable
+from functools import partial
 from uuid import UUID
 
 from websockets.asyncio.client import connect
@@ -41,11 +44,11 @@ def _abort_event(game_id: UUID, reason: str) -> schemas.GameEvent:
 
 
 def _game_done(
-    task: asyncio.Task,
+    task: asyncio.Task[None],
     game_id: UUID,
     games: dict[UUID, "Game"],
     free_slots: set[int],
-    scheduled_commands: asyncio.Queue,
+    scheduled_commands: asyncio.Queue[schemas.ClientCommand],
 ) -> None:
     """Drop a finished game; if its task was cancelled or crashed, still report
     a game end.
@@ -84,7 +87,11 @@ def _load_token() -> str | None:
     return creds.token if creds else None
 
 
-async def connect_backend_ws(ssl_ctx, token, on_connected):
+async def connect_backend_ws(
+    ssl_ctx: ssl.SSLContext | None,
+    token: str,
+    on_connected: Callable[[], None],
+) -> None:
     log.info(f"connecting to {BACKEND_URL}")
     headers = {"Authorization": f"Bearer {token}"}
     async with connect(BACKEND_URL, ssl=ssl_ctx, additional_headers=headers) as ws:
@@ -104,7 +111,7 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
         # containers to AVAILABLE_CPUS[i mod n] (see game.docker_run_args).
         free_slots: set[int] = set(range(MAX_GAMES))
 
-        async def receiver():
+        async def receiver() -> None:
             while True:
                 text = await ws.recv()
                 cmd: schemas.ServerCommandType = schemas.server_adapter.validate_json(
@@ -129,31 +136,35 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                         game = Game(game_id, white, black, tc, scheduled_commands, slot)
                         games[game_id] = game
                         game.task.add_done_callback(
-                            lambda t, gid=game_id: _game_done(
-                                t, gid, games, free_slots, scheduled_commands
+                            partial(
+                                _game_done,
+                                game_id=game_id,
+                                games=games,
+                                free_slots=free_slots,
+                                scheduled_commands=scheduled_commands,
                             )
                         )
                     case schemas.StopGame(game_id=game_id):
-                        game = games.get(game_id)
-                        if game is None:
+                        running = games.get(game_id)
+                        if running is None:
                             log.warn(
                                 f"stop game {log.short(game_id)}: not running here"
                             )
                         else:
-                            game.log.info("stopping (asked by the backend)")
+                            running.log.info("stopping (asked by the backend)")
                             # Cancellation kills fastchess + containers; the
                             # done-callback reports the aborted game end.
-                            game.task.cancel()
+                            running.task.cancel()
                     case schemas.Terminate():
                         log.info("backend asked this runner to exit")
                         raise _Terminated
 
-        async def sender():
+        async def sender() -> None:
             while True:
                 cmd = await scheduled_commands.get()
                 await ws.send(cmd.model_dump_json())
 
-        async def telemetry():
+        async def telemetry() -> None:
             # Report CPU/RAM utilization on a timer via the same outgoing queue.
             hardware.prime_cpu_percent()
             while True:
@@ -184,7 +195,7 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                 game.task.cancel()
 
 
-async def run_forever():
+async def run_forever() -> None:
     token = _load_token()
     if not token:
         log.die(

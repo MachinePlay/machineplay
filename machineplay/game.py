@@ -96,7 +96,7 @@ class Game:
         white: schemas.EngineConfig,
         black: schemas.EngineConfig,
         tc: str,
-        queue: asyncio.Queue,
+        queue: asyncio.Queue[schemas.ClientCommand],
         slot: int,
     ):
         self.game_id = game_id
@@ -129,12 +129,12 @@ class Game:
             game_id=self.game_id,
         )
 
-    async def send_server(self, event: schemas.GameStreamEvent):
+    async def send_server(self, event: schemas.GameStreamEvent) -> None:
         await self.queue.put(schemas.GameEvent(game_id=self.game_id, event=event))
 
     async def _stream_log(
         self, log_path: str, proc: asyncio.subprocess.Process, inc: float
-    ):
+    ) -> None:
         while not os.path.exists(log_path):
             if proc.returncode is not None:
                 return
@@ -210,7 +210,7 @@ class Game:
                     continue
                 await on_line(line)
 
-    async def play_game(self):
+    async def play_game(self) -> None:
         base, inc = parse_tc(self.tc)
         # fastchess pre-adds the first increment to each engine's starting clock
         self.clocks = {chess.WHITE: base + inc, chess.BLACK: base + inc}

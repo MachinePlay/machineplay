@@ -1,6 +1,6 @@
 """Thin HTTP client for the machineplay REST API (CLI login/upload)."""
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -45,7 +45,7 @@ def _request(method: str, path: str, token: str, **kwargs: Any) -> dict[str, Any
             "Check your connection, or MACHINEPLAY_API_URL if you set it."
         ) from exc
     _raise_for_status(resp)
-    return resp.json()
+    return cast(dict[str, Any], resp.json())
 
 
 def get_me(token: str) -> dict[str, Any]:

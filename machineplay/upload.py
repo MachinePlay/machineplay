@@ -227,7 +227,8 @@ def _read_pushed_digest(ref: str, repository: str) -> str:
     )
     prefix = f"{REGISTRY_HOST}/{repository}@"
     try:
-        for entry in json.loads(result.stdout or "[]"):
+        entries: list[str] = json.loads(result.stdout or "[]")
+        for entry in entries:
             if entry.startswith(prefix):
                 return entry[len(prefix) :]
     except json.JSONDecodeError:
