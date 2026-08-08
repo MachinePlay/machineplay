@@ -8,7 +8,7 @@ from uuid import UUID
 import chess
 import chess.pgn
 
-from machineplay import schemas
+from machineplay import log, proc, schemas
 from machineplay.config import (
     AVAILABLE_CPUS,
     ENGINE_CPUS,
@@ -50,40 +50,43 @@ def docker_run_args(ref: str, name: str, cpu: int) -> str:
     )
 
 
-async def docker_pull(ref: str) -> str | None:
+def _tail(output: bytes | str, lines: int = 10) -> str:
+    """Last few lines of a child's output, for one-line-ish error reporting."""
+    text = output.decode(errors="replace") if isinstance(output, bytes) else output
+    return "\n".join(text.strip().splitlines()[-lines:])
+
+
+async def docker_pull(ref: str, logger: log.Log = log.root) -> str | None:
     """Pull an image. Returns None on success, or docker's output on failure.
 
     Capped at PULL_TIMEOUT so a wedged pull can't hold a game slot forever.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "docker",
-        "pull",
-        ref,
+    child = await proc.start(
+        ["docker", "pull", ref],
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        logger=logger,
     )
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=PULL_TIMEOUT)
+        out, _ = await asyncio.wait_for(child.communicate(), timeout=PULL_TIMEOUT)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        child.kill()
+        await child.wait()
         return f"pull timed out after {PULL_TIMEOUT:.0f}s"
-    if proc.returncode != 0:
-        return out.decode(errors="replace").strip()
+    if child.returncode != 0:
+        return _tail(out)
     return None
 
 
-async def docker_rm(name: str) -> None:
+async def docker_rm(name: str, logger: log.Log = log.root) -> None:
     """Best-effort force-remove of a (possibly already-gone) container."""
-    proc = await asyncio.create_subprocess_exec(
-        "docker",
-        "rm",
-        "-f",
-        name,
+    child = await proc.start(
+        ["docker", "rm", "-f", name],
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        logger=logger,
     )
-    await proc.wait()
+    await child.wait()
 
 
 class Game:
@@ -101,6 +104,9 @@ class Game:
         self.black = black
         self.tc = tc
         self.slot = slot
+        # Games run concurrently and their lines interleave in the runner's
+        # log; label every one of them with the game's short id.
+        self.log = log.Log(f"game {log.short(game_id)}")
         self.queue: asyncio.Queue[schemas.ClientCommand] = queue
         self.san_moves: list[str] = []
         self.clocks: dict[chess.Color, float] = {chess.WHITE: 0.0, chess.BLACK: 0.0}
@@ -224,9 +230,8 @@ class Game:
         # Pull both images up front so a slow first pull can't trip fastchess's
         # engine-startup timeout, and pull failures surface as a clean game end.
         for ref in dict.fromkeys((white_ref, black_ref)):
-            print(f"pulling {ref}")
-            if (err := await docker_pull(ref)) is not None:
-                print(f"pull failed for {ref}: {err}")
+            if (err := await docker_pull(ref, self.log)) is not None:
+                self.log.error(f"pull failed for {ref}: {err}")
                 self.status = schemas.GameStatus.ABORTED
                 self.result = "*"
                 await self.send_server(
@@ -247,6 +252,10 @@ class Game:
             white_container = f"mp-{self.game_id}-w"
             black_container = f"mp-{self.game_id}-b"
             cpu = AVAILABLE_CPUS[self.slot % len(AVAILABLE_CPUS)]
+            self.log.info(
+                f"{self.white.name} (white) vs {self.black.name} (black), "
+                f"tc={self.tc}, slot={self.slot} on core {cpu}"
+            )
 
             cmd = [
                 FASTCHESS_PATH,
@@ -271,6 +280,11 @@ class Game:
                 "notation=san",
                 "timeleft=true",
                 "append=false",
+                # fastchess dumps the resolved tournament config next to
+                # itself on every run; keep that inside the game's temp dir
+                # instead of littering the runner's working directory.
+                "-config",
+                f"outname={os.path.join(tmpdir, 'fastchess-config.json')}",
                 "-log",
                 f"file={log_path}",
                 "level=trace",
@@ -279,23 +293,24 @@ class Game:
                 "append=false",
             ]
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
+            fastchess = await proc.start(
+                cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                logger=self.log,
             )
 
-            log_task = asyncio.create_task(self._stream_log(log_path, proc, inc))
+            log_task = asyncio.create_task(self._stream_log(log_path, fastchess, inc))
 
             async def _kill_fastchess() -> None:
                 log_task.cancel()
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.wait()
+                if fastchess.returncode is None:
+                    fastchess.kill()
+                    await fastchess.wait()
                 # Killing fastchess orphans its `docker run` children, so the
                 # containers keep running; force-remove them explicitly.
-                await docker_rm(white_container)
-                await docker_rm(black_container)
+                await docker_rm(white_container, self.log)
+                await docker_rm(black_container, self.log)
 
             # Safety net: fastchess normally ends the game on its own (time
             # forfeit etc.), but a hung container/pipe would hold this slot
@@ -303,10 +318,12 @@ class Game:
             # use (300 moves/side) plus generous startup slack.
             wallclock = 2 * (base + 300 * inc) + 120
             try:
-                await asyncio.wait_for(proc.communicate(), timeout=wallclock)
+                _, errors = await asyncio.wait_for(
+                    fastchess.communicate(), timeout=wallclock
+                )
                 await log_task
             except TimeoutError:
-                print(f"game {self.game_id} exceeded wallclock ({wallclock:.0f}s)")
+                self.log.error(f"exceeded wallclock ({wallclock:.0f}s)")
                 await _kill_fastchess()
                 self.status = schemas.GameStatus.ABORTED
                 self.result = "*"
@@ -323,6 +340,15 @@ class Game:
                 await _kill_fastchess()
                 raise
 
+            # A non-zero exit means fastchess itself gave up (bad engine args,
+            # an engine that never answered `uci`, …). Its stderr is the only
+            # place that says why, so don't swallow it.
+            if fastchess.returncode != 0:
+                self.log.error(
+                    f"fastchess exited {fastchess.returncode}: "
+                    f"{_tail(errors) or 'no stderr output'}"
+                )
+
             reason: str | None = None
             if os.path.exists(pgn_path):
                 with open(pgn_path) as f:
@@ -333,10 +359,14 @@ class Game:
                 if game_obj is not None:
                     reason = game_obj.headers.get("Termination")
             else:
+                self.log.warn("fastchess wrote no PGN — recording an unfinished game")
                 self.result = "*"
 
         self.status = schemas.GameStatus.ENDED
-        print(f"game ended result={self.result} plies={self.board.ply()}")
+        self.log.info(
+            f"ended result={self.result} plies={self.board.ply()}"
+            + (f" ({reason})" if reason else "")
+        )
         await self.send_server(
             schemas.GameEndEvent(
                 result=self.result, pgn=pgn_text or None, reason=reason

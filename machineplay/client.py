@@ -5,9 +5,9 @@ import socket
 from uuid import UUID
 
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed, InvalidHandshake
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
-from machineplay import credentials, hardware, schemas
+from machineplay import credentials, hardware, log, proc, schemas
 from machineplay.config import (
     BACKEND_URL,
     MAX_GAMES,
@@ -63,10 +63,15 @@ def _game_done(
         return
     if (exc := task.exception()) is None:
         return
-    print(f"game {game_id} crashed: {exc!r}")
-    scheduled_commands.put_nowait(
-        _abort_event(game_id, f"runner error: {type(exc).__name__}")
+    log.error(f"game {log.short(game_id)} crashed: {exc!r}")
+    # A missing dependency already carries a precise message ("`fastchess` is
+    # not installed …"); anything else is a bug, so name its type.
+    reason = (
+        str(exc)
+        if isinstance(exc, proc.CommandNotFound)
+        else f"runner error: {type(exc).__name__}"
     )
+    scheduled_commands.put_nowait(_abort_event(game_id, reason))
 
 
 def _load_token() -> str | None:
@@ -80,7 +85,7 @@ def _load_token() -> str | None:
 
 
 async def connect_backend_ws(ssl_ctx, token, on_connected):
-    print(f"connecting to {BACKEND_URL}")
+    log.info(f"connecting to {BACKEND_URL}")
     headers = {"Authorization": f"Bearer {token}"}
     async with connect(BACKEND_URL, ssl=ssl_ctx, additional_headers=headers) as ws:
         intro = schemas.Introduction(
@@ -90,7 +95,7 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
             hardware=hardware.read_hardware(),
         )
         await ws.send(intro.model_dump_json())
-        print("connected")
+        log.info(f"connected as runner '{intro.name}' ({RUNNER_ID})")
         on_connected()
 
         scheduled_commands: asyncio.Queue[schemas.ClientCommand] = asyncio.Queue()
@@ -111,8 +116,9 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                         game_id=game_id, white=white, black=black, tc=tc
                     ):
                         if not free_slots:
-                            print(
-                                f"refusing start_game {game_id}: at capacity ({len(games)}/{MAX_GAMES})"
+                            log.warn(
+                                f"refusing game {log.short(game_id)}: at capacity "
+                                f"({len(games)}/{MAX_GAMES} games)"
                             )
                             await scheduled_commands.put(
                                 _abort_event(game_id, "runner at capacity")
@@ -120,9 +126,6 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                             continue
                         slot = min(free_slots)
                         free_slots.remove(slot)
-                        print(
-                            f"start_game {game_id} {white.name} vs {black.name} (slot {slot})"
-                        )
                         game = Game(game_id, white, black, tc, scheduled_commands, slot)
                         games[game_id] = game
                         game.task.add_done_callback(
@@ -133,14 +136,16 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
                     case schemas.StopGame(game_id=game_id):
                         game = games.get(game_id)
                         if game is None:
-                            print(f"stop_game {game_id}: not running here")
+                            log.warn(
+                                f"stop game {log.short(game_id)}: not running here"
+                            )
                         else:
-                            print(f"stop_game {game_id}")
+                            game.log.info("stopping (asked by the backend)")
                             # Cancellation kills fastchess + containers; the
                             # done-callback reports the aborted game end.
                             game.task.cancel()
                     case schemas.Terminate():
-                        print("exit")
+                        log.info("backend asked this runner to exit")
                         raise _Terminated
 
         async def sender():
@@ -173,6 +178,8 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
             # Abandon in-flight games so their fastchess subprocesses don't
             # outlive the connection; the backend marks them aborted when it
             # notices the disconnect.
+            if games:
+                log.warn(f"dropping {len(games)} in-flight game(s) with the connection")
             for game in games.values():
                 game.task.cancel()
 
@@ -180,11 +187,11 @@ async def connect_backend_ws(ssl_ctx, token, on_connected):
 async def run_forever():
     token = _load_token()
     if not token:
-        print(
-            "no API token found. Run `machineplay login` on this machine, "
-            "or set MP_TOKEN in the environment."
+        log.die(
+            "no API token found.",
+            "run `machineplay login` on this machine",
+            "or set MP_TOKEN in the environment",
         )
-        raise SystemExit(1)
 
     ssl_ctx = make_ssl_context()
     loop = asyncio.get_running_loop()
@@ -201,10 +208,20 @@ async def run_forever():
             await connect_backend_ws(ssl_ctx, token, on_connected)
             return  # connect_backend_ws only returns on a clean close
         except _Terminated:
-            print("terminated by server")
+            log.info("terminated by the backend")
             return
+        except InvalidStatus as exc:
+            # A rejected token is not going to start working on retry, so stop
+            # instead of hammering the backend with a bad credential forever.
+            if exc.response.status_code in (401, 403):
+                log.die(
+                    f"the backend rejected this runner's API token "
+                    f"(HTTP {exc.response.status_code}).",
+                    "run `machineplay login` again, or fix MP_TOKEN",
+                )
+            log.error(f"handshake failed: HTTP {exc.response.status_code}")
         except _RETRYABLE as exc:
-            print(f"connection lost: {type(exc).__name__}: {exc}")
+            log.error(f"connection lost: {type(exc).__name__}: {exc}")
 
         # A session that stayed up a while (healthy) resets backoff so a backend
         # hot-reload reconnects fast; a backend that's truly down keeps backing off.
@@ -215,6 +232,6 @@ async def run_forever():
             delay = RECONNECT_BASE
 
         wait = random.uniform(0, delay)
-        print(f"reconnecting in {wait:.1f}s")
+        log.info(f"reconnecting in {wait:.1f}s")
         await asyncio.sleep(wait)
         delay = min(delay * 2, RECONNECT_MAX)
