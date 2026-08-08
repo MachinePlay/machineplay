@@ -37,6 +37,13 @@ Issues = "https://github.com/MachinePlay/machineplay/issues"
 [project.scripts]
 machineplay = "machineplay.cli:main"
 
+[tool.mypy]
+# The floor from requires-python, not the interpreter development happens on:
+# what type-checks here has to hold for everyone installing from PyPI.
+python_version = "3.12"
+files = ["machineplay"]
+ignore_missing_imports = true
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -46,3 +53,9 @@ path = "machineplay/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["machineplay"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+    "pre-commit>=4.6.0",
+]

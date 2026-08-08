@@ -36,7 +36,7 @@ class Terminate(BaseModel):
 
 type ServerCommandType = StartGame | StopGame | Terminate
 ServerCommand = Annotated[ServerCommandType, Field(discriminator="cmd")]
-server_adapter = TypeAdapter(ServerCommand)
+server_adapter: TypeAdapter[ServerCommandType] = TypeAdapter(ServerCommand)
 
 
 class GameStatus(StrEnum):
@@ -143,4 +143,4 @@ class Telemetry(BaseModel):
 
 type ClientCommandType = Introduction | GameEvent | Telemetry
 ClientCommand = Annotated[ClientCommandType, Field(discriminator="cmd")]
-client_adapter = TypeAdapter(ClientCommand)
+client_adapter: TypeAdapter[ClientCommandType] = TypeAdapter(ClientCommand)

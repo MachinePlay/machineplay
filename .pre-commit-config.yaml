@@ -1,0 +1,28 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+#
+# Install the hook with `uv run pre-commit install` — running it through `uv`
+# points the generated hook at this repo's own .venv, so it keeps working no
+# matter what is (or isn't) on PATH.
+
+repos:
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  # Pinned to the same rev as the backend repo. Ruff 0.16 widened the default
+  # rule set (S110, BLE001, DTZ005, …); adopting it here wants a pass over the
+  # existing code first, so bump both repos together when that happens.
+  rev: v0.15.12
+  hooks:
+    - id: ruff-check
+      args: [ --fix ]
+    - id: ruff-format
+
+- repo: local
+  hooks:
+    - id: mypy
+      name: mypy
+      # `uv run` so mypy resolves the project's own dependencies (pydantic's
+      # plugin, python-chess stubs) instead of a bare hook environment.
+      entry: uv run mypy
+      language: system
+      types: [python]
+      pass_filenames: false
