@@ -34,9 +34,11 @@ from machineplay.config import ENGINE_PLATFORM, REGISTRY_HOST, UCI_TIMEOUT, WEB_
 LOCAL_TAG = "machineplay-local:latest"
 _ID_NAME_RE = re.compile(r"^id name (.+)$", re.MULTILINE)
 _TAG_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
-# Mirrors ENGINE_NAME_RE in the backend (app/engines.py). Checked here so a bad
-# name fails before a multi-hundred-megabyte push, not after it.
+# Mirror ENGINE_NAME_RE / ENGINE_VERSION_RE in the backend (app/engines.py).
+# Checked here so a bad name or version fails before a multi-hundred-megabyte
+# push, not after it.
 _ENGINE_NAME_RE = re.compile(r"^[a-z0-9](?:[._-]?[a-z0-9]){0,63}$")
+_VERSION_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
 # `docker build` and `docker run` both default to the host's architecture, so
 # every invocation that produces or executes the image says which platform it
 # means. See ENGINE_PLATFORM in config.py for why it matters.
@@ -116,9 +118,9 @@ def _slugify(name: str) -> str:
 
 
 def _sanitize_tag(version: str) -> str:
-    """Coerce a version string into a valid docker tag."""
+    """Coerce a version string into one that satisfies _VERSION_RE."""
     tag = _TAG_RE.sub("-", version).strip("-._")
-    return (tag or "latest")[:128]
+    return (tag or "latest")[:64]
 
 
 def docker_login(token: str, login: str) -> bool:
@@ -252,6 +254,23 @@ def _ask_engine_name(default: str) -> str:
         log.info(f"suggestion: {_slugify(name)}")
 
 
+def _ask_version(default: str) -> str:
+    """Prompt until we have a version the backend will accept.
+
+    The version doubles as the pushed image's docker tag, so it has to satisfy
+    both; _sanitize_tag turns whatever was typed into a usable suggestion.
+    """
+    while True:
+        version = log.prompt("version", default)
+        if _VERSION_RE.fullmatch(version):
+            return version
+        log.error(
+            f"'{version}' is not a valid version: 1-64 characters of letters, "
+            "digits, '.', '_' and '-', starting with a letter, digit or '_'"
+        )
+        log.info(f"suggestion: {_sanitize_tag(version)}")
+
+
 def do_upload() -> None:
     creds = credentials.load()
     if creds is None:
@@ -290,14 +309,10 @@ def do_upload() -> None:
     # Engine names are URL slugs: they live at machineplay.org/{login}/{engine}.
     name = _ask_engine_name(_slugify(Path.cwd().name))
 
-    default_version = datetime.now().strftime("%Y-%m-%d-%H-%M")
-    version = log.prompt("version", default_version)
-    tag = _sanitize_tag(version)
-    if tag != version:
-        log.warn(f"version tagged as '{tag}' (docker tags can't hold '{version}')")
+    version = _ask_version(datetime.now().strftime("%Y-%m-%d-%H-%M"))
 
     repository = f"{creds.login.lower()}/{name}"
-    ref = f"{REGISTRY_HOST}/{repository}:{tag}"
+    ref = f"{REGISTRY_HOST}/{repository}:{version}"
 
     if proc.run(["docker", "tag", LOCAL_TAG, ref]).returncode != 0:
         log.die(f"docker tag {LOCAL_TAG} → {ref} failed.")
@@ -313,7 +328,7 @@ def do_upload() -> None:
 
     digest = _read_pushed_digest(ref, repository)
 
-    log.info(f"registering {repository}:{tag} ({digest[:19]}…)")
+    log.info(f"registering {repository}:{version} ({digest[:19]}…)")
     try:
         result = api.register_engine(
             creds.token, name, version, repository, digest, _image_size()
