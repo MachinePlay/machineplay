@@ -56,6 +56,44 @@ def _tail(output: bytes | str, lines: int = 10) -> str:
     return "\n".join(text.strip().splitlines()[-lines:])
 
 
+# How fastchess names an engine fault on stdout. Matched against an allowlist
+# rather than "any warning": every run also warns about missing opening books,
+# an absent Ponder option and unscorable info lines, none of which end a game.
+_FAULT_RE = re.compile(
+    r"^(?:Warning[;:]\s*)?(.*(?:is not responsive|stalled / disconnected"
+    r"|disconnects|failed to start|illegal move).*)$",
+    re.IGNORECASE,
+)
+
+
+# What is worth keeping from fastchess's trace log: the UCI transcript
+# ("White ---> info string …") and anything it flagged. The rest is bookkeeping
+# — thread ids, destructors, "Saving results…" — which is all a plain tail of a
+# failed run would show, since the fault happens a 60s timeout before the end.
+_TRACE_RE = re.compile(r"--->|<---|\[WARN|\[ERROR")
+
+
+def _log_excerpt(path: str, lines: int = 20) -> str:
+    """The tail of a fastchess trace log, minus its bookkeeping."""
+    with open(path) as f:
+        kept = [line for line in f if _TRACE_RE.search(line)]
+    return "".join(kept[-lines:]).strip()
+
+
+def _failure_reason(stdout: bytes) -> str | None:
+    """Why fastchess gave up, in its own words.
+
+    fastchess reports engine faults on *stdout*, leaving stderr empty, so a bare
+    exit code is all the caller would otherwise see. The earliest fault line is
+    the cause; the ones after it are its fallout ("stalled / disconnected",
+    "stopping tournament").
+    """
+    for line in stdout.decode(errors="replace").splitlines():
+        if m := _FAULT_RE.match(line.strip()):
+            return m.group(1).strip()
+    return None
+
+
 async def docker_pull(ref: str, logger: log.Log = log.root) -> str | None:
     """Pull an image. Returns None on success, or docker's output on failure.
 
@@ -318,7 +356,7 @@ class Game:
             # use (300 moves/side) plus generous startup slack.
             wallclock = 2 * (base + 300 * inc) + 120
             try:
-                _, errors = await asyncio.wait_for(
+                output, errors = await asyncio.wait_for(
                     fastchess.communicate(), timeout=wallclock
                 )
                 await log_task
@@ -341,34 +379,51 @@ class Game:
                 raise
 
             # A non-zero exit means fastchess itself gave up (bad engine args,
-            # an engine that never answered `uci`, …). Its stderr is the only
-            # place that says why, so don't swallow it.
+            # an engine that never answered `uci`, a mangled UCI line, …).
+            fault: str | None = None
             if fastchess.returncode != 0:
-                self.log.error(
-                    f"fastchess exited {fastchess.returncode}: "
-                    f"{_tail(errors) or 'no stderr output'}"
-                )
+                fault = _failure_reason(output) or _tail(errors) or "no output"
+                self.log.error(f"fastchess exited {fastchess.returncode}: {fault}")
+                # The trace log holds the actual UCI conversation, and it is the
+                # only place that says what the engine got wrong. The temp dir
+                # takes it along on the way out, so tail it into the runner log
+                # while it still exists.
+                if os.path.exists(log_path):
+                    self.log.error("engine log tail:\n" + _log_excerpt(log_path))
 
             reason: str | None = None
             if os.path.exists(pgn_path):
                 with open(pgn_path) as f:
                     pgn_text = f.read()
-                game_obj = chess.pgn.read_game(io.StringIO(pgn_text))
-                self.result = game_obj.headers.get("Result", "*") if game_obj else "*"
+            # fastchess still creates the PGN file when it aborts before the
+            # first move; an empty one means there is no game to record.
+            game_obj = (
+                chess.pgn.read_game(io.StringIO(pgn_text)) if pgn_text.strip() else None
+            )
+            if game_obj is not None:
+                self.result = game_obj.headers.get("Result", "*")
                 # fastchess records how the game ended ("time forfeit", …).
-                if game_obj is not None:
-                    reason = game_obj.headers.get("Termination")
+                reason = game_obj.headers.get("Termination")
+                self.status = schemas.GameStatus.ENDED
             else:
-                self.log.warn("fastchess wrote no PGN — recording an unfinished game")
+                # No PGN is an engine fault, not a result: abort it — which
+                # keeps it out of standings — carrying fastchess's diagnosis,
+                # so the game page says why instead of showing a bare `*`.
+                self.log.warn("fastchess produced no usable PGN")
                 self.result = "*"
+                pgn_text = ""
+                reason = fault or "engine did not finish the game"
+                self.status = schemas.GameStatus.ABORTED
 
-        self.status = schemas.GameStatus.ENDED
         self.log.info(
-            f"ended result={self.result} plies={self.board.ply()}"
+            f"{self.status} result={self.result} plies={self.board.ply()}"
             + (f" ({reason})" if reason else "")
         )
         await self.send_server(
             schemas.GameEndEvent(
-                result=self.result, pgn=pgn_text or None, reason=reason
+                result=self.result,
+                pgn=pgn_text or None,
+                status=self.status,
+                reason=reason,
             )
         )
