@@ -120,7 +120,11 @@ async def connect_backend_ws(
 
                 match cmd:
                     case schemas.StartGame(
-                        game_id=game_id, white=white, black=black, tc=tc
+                        game_id=game_id,
+                        white=white,
+                        black=black,
+                        tc=tc,
+                        opening=opening,
                     ):
                         if not free_slots:
                             log.warn(
@@ -133,7 +137,15 @@ async def connect_backend_ws(
                             continue
                         slot = min(free_slots)
                         free_slots.remove(slot)
-                        game = Game(game_id, white, black, tc, scheduled_commands, slot)
+                        game = Game(
+                            game_id,
+                            white,
+                            black,
+                            tc,
+                            scheduled_commands,
+                            slot,
+                            opening,
+                        )
                         games[game_id] = game
                         game.task.add_done_callback(
                             partial(

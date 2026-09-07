@@ -229,6 +229,27 @@ def termination(game_obj: chess.pgn.Game) -> str | None:
     return None if header == "normal" else header
 
 
+def opening_pgn(moves: list[str]) -> str:
+    """A book line as the one-game PGN fastchess wants for `-openings`.
+
+    fastchess has no way of being handed moves directly — a book file is the
+    only channel — so the line the backend dealt is written back out as the
+    smallest PGN that carries it. PGN and not EPD: fastchess then opens with
+    `position startpos moves …` instead of `position fen …`, so an engine that
+    only implements the `startpos` form (every engine from the starter's early
+    chapters) plays these games fine.
+
+    Raises ValueError if a move is not legal in the line so far.
+    """
+    board = chess.Board()
+    for uci in moves:
+        move = chess.Move.from_uci(uci)
+        if move not in board.legal_moves:
+            raise ValueError(f"illegal opening move {uci!r} at ply {board.ply()}")
+        board.push(move)
+    return str(chess.pgn.Game.from_board(board))
+
+
 async def docker_pull(ref: str, logger: log.Log = log.root) -> str | None:
     """Pull an image. Returns None on success, or docker's output on failure.
 
@@ -271,12 +292,14 @@ class Game:
         tc: str,
         queue: asyncio.Queue[schemas.ClientCommand],
         slot: int,
+        opening: list[str] | None = None,
     ):
         self.game_id = game_id
         self.white = white
         self.black = black
         self.tc = tc
         self.slot = slot
+        self.opening = opening or []
         # Games run concurrently and their lines interleave in the runner's
         # log; label every one of them with the game's short id.
         self.log = log.Log(f"game {log.short(game_id)}")
@@ -485,6 +508,33 @@ class Game:
                 game_id=self.game_id,
             )
         )
+
+        # Play the book line onto this side's board before anyone sees the
+        # game. fastchess plays the opening itself and never reports it — the
+        # trace log's `bestmove` lines start after the book — so without this
+        # the board here would lag the real game by the length of the opening
+        # and every engine move would land on the wrong position.
+        try:
+            book_pgn = opening_pgn(self.opening) if self.opening else None
+        except ValueError as exc:
+            self.log.error(f"bad opening line: {exc}")
+            self.status = schemas.GameStatus.ABORTED
+            self.result = "*"
+            await self.send_server(
+                schemas.GameEndEvent(
+                    result="*",
+                    pgn=None,
+                    status=schemas.GameStatus.ABORTED,
+                    reason="invalid opening line",
+                )
+            )
+            return
+        for uci in self.opening:
+            move = chess.Move.from_uci(uci)
+            self.san_moves.append(self.board.san(move))
+            self.board.push(move)
+            self.evals.append(None)
+
         await self.send_server(self.snapshot())
 
         white_ref = pull_ref(self.white.repository, self.white.digest)
@@ -514,10 +564,20 @@ class Game:
 
             white_container = f"mp-{self.game_id}-w"
             black_container = f"mp-{self.game_id}-b"
+            # One book file holding one line: with `-rounds 1 -games 1`
+            # fastchess plays its first opening and stops, which is exactly the
+            # line the backend picked for this game.
+            opening_args: list[str] = []
+            if book_pgn is not None:
+                book_path = os.path.join(tmpdir, "opening.pgn")
+                with open(book_path, "w") as f:
+                    f.write(book_pgn)
+                opening_args = ["-openings", f"file={book_path}", "format=pgn"]
             cpu = AVAILABLE_CPUS[self.slot % len(AVAILABLE_CPUS)]
             self.log.info(
                 f"{self.white.name} (white) vs {self.black.name} (black), "
                 f"tc={self.tc}, slot={self.slot} on core {cpu}"
+                + (f", opening {' '.join(self.san_moves)}" if self.opening else "")
             )
 
             cmd = [
@@ -538,6 +598,7 @@ class Game:
                 "-games",
                 "1",
                 "-noswap",
+                *opening_args,
                 "-pgnout",
                 f"file={pgn_path}",
                 "notation=san",

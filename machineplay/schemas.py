@@ -23,6 +23,11 @@ class StartGame(BaseModel):
     # always sets it, so the default lives in one place (backend settings.tc)
     # rather than being duplicated here.
     tc: str
+    # The opening line to start from, as UCI moves from the standard start
+    # position; empty plays from the initial position. The backend deals these
+    # out of an opening book, so no book file ever reaches a runner and one
+    # game's opening is a couple of dozen bytes on the wire.
+    opening: list[str] = Field(default_factory=list)
 
 
 class StopGame(BaseModel):
