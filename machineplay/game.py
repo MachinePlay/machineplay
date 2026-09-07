@@ -209,6 +209,26 @@ def _failure_reason(stdout: bytes) -> str | None:
     return None
 
 
+def termination(game_obj: chess.pgn.Game) -> str | None:
+    """How the game ended, in fastchess's words.
+
+    The `Termination` header is "normal" for every ordinary finish — mate,
+    stalemate, repetition and the rest all collapse into it — so the only
+    place the actual reason survives is the last field of the final move's
+    comment, after the eval and clock ones:
+
+        Ke6 {0.00/245 0.003s, tl=1.954s, Draw by 3-fold repetition} 1/2-1/2
+
+    Absent that (a PGN with no move comments), fall back to the header, minus
+    its "normal", which says nothing worth showing.
+    """
+    field = game_obj.end().comment.rsplit(",", 1)[-1].strip()
+    if field[:1].isalpha() and not field.startswith("tl="):
+        return field[0].lower() + field[1:]
+    header = game_obj.headers.get("Termination")
+    return None if header == "normal" else header
+
+
 async def docker_pull(ref: str, logger: log.Log = log.root) -> str | None:
     """Pull an image. Returns None on success, or docker's output on failure.
 
@@ -607,8 +627,9 @@ class Game:
             )
             if game_obj is not None:
                 self.result = game_obj.headers.get("Result", "*")
-                # fastchess records how the game ended ("time forfeit", …).
-                reason = game_obj.headers.get("Termination")
+                # fastchess records how the game ended ("black loses on time",
+                # "draw by 3-fold repetition", …).
+                reason = termination(game_obj)
                 self.status = schemas.GameStatus.ENDED
             else:
                 # No PGN is an engine fault, not a result: abort it — which
