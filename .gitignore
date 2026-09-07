@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local CLI/runner state. Under direnv `.env` points XDG_CONFIG_HOME here, so
+# this holds an API token (and the runner's id) for whatever backend minted it.
+creds/
