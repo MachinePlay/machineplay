@@ -3,6 +3,7 @@ import io
 import os
 import re
 import tempfile
+from dataclasses import dataclass
 from uuid import UUID
 
 import chess
@@ -18,10 +19,124 @@ from machineplay.config import (
     pull_ref,
 )
 
-# fastchess engine-log format: "<--- go ... wtime X ... btime Y" (sent to engine)
-_GO_RE = re.compile(r"<---\s+go\b.*\bwtime\s+(\d+).*\bbtime\s+(\d+)")
-# fastchess engine-log format: "---> bestmove MOVE" (reply from engine)
-_BESTMOVE_RE = re.compile(r"--->\s+bestmove\s+([a-h][1-8][a-h][1-8][qrbn]?|0000)\b")
+# fastchess trace-log lines name the engine, the direction and the UCI payload:
+# "[Engine] [14:58:25.264] <tid>  White <--- go wtime 3100 …". "<---" is what
+# the GUI sent the engine, "--->" the engine's own output.
+_LINE_RE = re.compile(r"\s(White|Black)\s(<---|--->)\s(.*?)\s*$")
+_GO_RE = re.compile(r"^go\b.*\bwtime\s+(\d+).*\bbtime\s+(\d+)")
+_BESTMOVE_RE = re.compile(r"^bestmove\s+([a-h][1-8][a-h][1-8][qrbn]?|0000)\b")
+
+# `info` fields worth keeping, mapped to their SearchInfo attribute.
+_INFO_INTS = {
+    "depth": "depth",
+    "seldepth": "seldepth",
+    "nodes": "nodes",
+    "nps": "nps",
+    "time": "time_ms",
+}
+# Caps on what one search may push to the browser: PV plies, transcript lines,
+# and how often an in-progress search reports itself.
+PV_LIMIT = 16
+LOG_LINES_PER_SEARCH = 150
+# How often an in-progress search may report itself: on a new depth, but never
+# more than this often. Without the floor a fast engine emits a couple of dozen
+# events a second — one per depth — and every one of them is a re-render in
+# every browser watching the game.
+INFO_INTERVAL = 0.3
+INFO_MIN_GAP = 0.15
+# Minimum gap between `info` lines kept for the transcript. Depth alone is not
+# enough of a filter: an engine that sees a forced mate re-reports it at every
+# remaining depth, hundreds of times in a few milliseconds.
+LOG_INFO_INTERVAL = 0.05
+# UCI lines are batched: flushed at this many, or after this long.
+LOG_BATCH = 24
+LOG_INTERVAL = 0.3
+
+
+def parse_info(payload: str) -> schemas.SearchInfo | None:
+    """One UCI `info` line as a SearchInfo, or None when it says nothing about
+    a search ("info string …", an extra `multipv` line, plain chatter)."""
+    tokens = payload.split()
+    if len(tokens) < 2 or tokens[0] != "info":
+        return None
+    info = schemas.SearchInfo()
+    useful = False
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "pv":
+            info.pv = tokens[i + 1 : i + 1 + PV_LIMIT]
+            useful = useful or bool(info.pv)
+            break
+        if token == "multipv" and i + 1 < len(tokens) and tokens[i + 1] != "1":
+            return None  # only the principal variation is shown
+        if token == "score" and i + 2 < len(tokens):
+            kind, raw = tokens[i + 1], tokens[i + 2]
+            try:
+                value = int(raw)
+            except ValueError:
+                i += 1
+                continue
+            if kind == "cp":
+                info.score_cp = value
+                useful = True
+            elif kind == "mate":
+                info.score_mate = value
+                useful = True
+            i += 3
+            continue
+        if (field := _INFO_INTS.get(token)) and i + 1 < len(tokens):
+            try:
+                setattr(info, field, int(tokens[i + 1]))
+            except ValueError:
+                pass
+            else:
+                useful = True
+            i += 2
+            continue
+        i += 1
+    return info if useful else None
+
+
+def merge_info(
+    old: schemas.SearchInfo | None, new: schemas.SearchInfo
+) -> schemas.SearchInfo:
+    """Fold one `info` line into what the engine has said so far this search.
+
+    UCI lines are partial: an engine reports `depth … currmove …` while working
+    through a depth and only quotes its score and PV when it has one. Replacing
+    the state with every line would blank the score half the time, so fields
+    carry over until the engine says otherwise — the same running picture a GUI
+    keeps. A fresh `go` throws the whole state away.
+    """
+    if old is None:
+        return new
+    merged = old.model_copy()
+    fields = new.model_dump(exclude_none=True)
+    if not new.pv:
+        fields.pop("pv", None)
+    # The two score kinds are alternatives, so a new one clears the other.
+    if new.score_cp is not None:
+        merged.score_mate = None
+    if new.score_mate is not None:
+        merged.score_cp = None
+    for name, value in fields.items():
+        setattr(merged, name, value)
+    return merged
+
+
+@dataclass
+class _SideState:
+    """One engine's per-search bookkeeping while it thinks: the best `info` seen
+    so far, plus what has already been sent or logged, so a chatty engine is
+    thinned instead of relayed line by line. Replaced wholesale on each `go`."""
+
+    info: schemas.SearchInfo | None = None
+    sent_at: float = 0.0
+    sent_depth: int | None = None
+    logged_at: float = 0.0
+    logged_depth: int | None = None
+    logged_lines: int = 0
 
 
 def parse_tc(spec: str) -> tuple[float, float]:
@@ -147,6 +262,8 @@ class Game:
         self.log = log.Log(f"game {log.short(game_id)}")
         self.queue: asyncio.Queue[schemas.ClientCommand] = queue
         self.san_moves: list[str] = []
+        # Parallel to san_moves: what the mover's search reported, or None.
+        self.evals: list[schemas.SearchInfo | None] = []
         self.clocks: dict[chess.Color, float] = {chess.WHITE: 0.0, chess.BLACK: 0.0}
         self.result: str | None = None
         self.status: schemas.GameStatus = schemas.GameStatus.PLAYING
@@ -160,6 +277,7 @@ class Game:
             white_name=self.white.name,
             black_name=self.black.name,
             moves=list(self.san_moves),
+            evals=list(self.evals),
             white_clock=self.clocks[chess.WHITE],
             black_clock=self.clocks[chess.BLACK],
             result=self.result,
@@ -182,59 +300,143 @@ class Game:
         go_wtime: float | None = None
         go_btime: float | None = None
         loop = asyncio.get_running_loop()
+        sides = {chess.WHITE: _SideState(), chess.BLACK: _SideState()}
+        pending: list[schemas.UciLine] = []
+        flushed_at = loop.time()
+
+        async def flush_log(force: bool = False) -> None:
+            nonlocal flushed_at
+            now = loop.time()
+            if not pending:
+                flushed_at = now
+                return
+            if (
+                not force
+                and len(pending) < LOG_BATCH
+                and now - flushed_at < LOG_INTERVAL
+            ):
+                return
+            await self.send_server(schemas.UciLogEvent(lines=list(pending)))
+            pending.clear()
+            flushed_at = now
+
+        def record(side: chess.Color, sent: bool, text: str) -> None:
+            """Queue a transcript line, capped per search so an engine that
+            spams cannot flood the browser (or this process's memory)."""
+            state = sides[side]
+            if state.logged_lines > LOG_LINES_PER_SEARCH:
+                return
+            state.logged_lines += 1
+            if state.logged_lines > LOG_LINES_PER_SEARCH:
+                text = "… further output dropped"
+            pending.append(
+                schemas.UciLine(
+                    side="white" if side == chess.WHITE else "black",
+                    sent=sent,
+                    text=text,
+                    ply=self.board.ply(),
+                )
+            )
 
         async def on_line(line: str) -> None:
             nonlocal go_loop_time, go_wtime, go_btime
 
-            if m := _GO_RE.search(line):
-                go_loop_time = loop.time()
-                go_wtime = int(m.group(1)) / 1000.0
-                go_btime = int(m.group(2)) / 1000.0
-            elif m := _BESTMOVE_RE.search(line):
-                uci = m.group(1)
-                if uci == "0000":
-                    return
-                try:
-                    move = chess.Move.from_uci(uci)
-                except ValueError:
-                    return
-                if move not in self.board.legal_moves:
-                    return
+            parsed = _LINE_RE.search(line)
+            if parsed is None:
+                return
+            name, arrow, payload = parsed.groups()
+            side = chess.WHITE if name == "White" else chess.BLACK
+            state = sides[side]
 
-                side = self.board.turn
-                elapsed = (
-                    (loop.time() - go_loop_time) if go_loop_time is not None else 0.0
+            if arrow == "<---":
+                if m := _GO_RE.match(payload):
+                    go_loop_time = loop.time()
+                    go_wtime = int(m.group(1)) / 1000.0
+                    go_btime = int(m.group(2)) / 1000.0
+                    sides[side] = _SideState()
+                record(side, True, payload)
+                return
+
+            if payload.startswith("info"):
+                info = parse_info(payload)
+                if info is None:
+                    record(side, False, payload)
+                    return
+                info = merge_info(state.info, info)
+                state.info = info
+                now = loop.time()
+                # Keep one transcript line per depth, and never two in the same
+                # breath: a deep search reports each depth many times over, and
+                # only its shape is worth reading back.
+                if (
+                    info.depth != state.logged_depth
+                    and now - state.logged_at >= LOG_INFO_INTERVAL
+                ):
+                    state.logged_depth = info.depth
+                    state.logged_at = now
+                    record(side, False, payload)
+                due = (
+                    info.depth != state.sent_depth
+                    or now - state.sent_at >= INFO_INTERVAL
                 )
-                if side == chess.WHITE:
-                    self.clocks[chess.WHITE] = max(
-                        0.0, (go_wtime or 0.0) - elapsed + inc
+                if due and now - state.sent_at >= INFO_MIN_GAP:
+                    state.sent_depth = info.depth
+                    state.sent_at = now
+                    await self.send_server(
+                        schemas.EngineInfoEvent(
+                            side="white" if side == chess.WHITE else "black",
+                            ply=self.board.ply(),
+                            info=info,
+                        )
                     )
-                    if go_btime is not None:
-                        self.clocks[chess.BLACK] = go_btime
-                else:
-                    self.clocks[chess.BLACK] = max(
-                        0.0, (go_btime or 0.0) - elapsed + inc
-                    )
-                    if go_wtime is not None:
-                        self.clocks[chess.WHITE] = go_wtime
+                return
 
-                san = self.board.san(move)
-                self.board.push(move)
-                self.san_moves.append(san)
-                go_loop_time = None
+            if not (m := _BESTMOVE_RE.match(payload)):
+                record(side, False, payload)
+                return
 
-                await self.send_server(
-                    schemas.MoveEvent(
-                        uci=uci,
-                        san=san,
-                        from_square=uci[:2],
-                        to_square=uci[2:4],
-                        fen=self.board.fen(),
-                        ply=self.board.ply(),
-                        white_clock=self.clocks[chess.WHITE],
-                        black_clock=self.clocks[chess.BLACK],
-                    )
+            record(side, False, payload)
+            uci = m.group(1)
+            if uci == "0000":
+                return
+            try:
+                move = chess.Move.from_uci(uci)
+            except ValueError:
+                return
+            if move not in self.board.legal_moves:
+                return
+
+            mover = self.board.turn
+            elapsed = (loop.time() - go_loop_time) if go_loop_time is not None else 0.0
+            if mover == chess.WHITE:
+                self.clocks[chess.WHITE] = max(0.0, (go_wtime or 0.0) - elapsed + inc)
+                if go_btime is not None:
+                    self.clocks[chess.BLACK] = go_btime
+            else:
+                self.clocks[chess.BLACK] = max(0.0, (go_btime or 0.0) - elapsed + inc)
+                if go_wtime is not None:
+                    self.clocks[chess.WHITE] = go_wtime
+
+            san = self.board.san(move)
+            self.board.push(move)
+            self.san_moves.append(san)
+            self.evals.append(state.info)
+            go_loop_time = None
+
+            await self.send_server(
+                schemas.MoveEvent(
+                    uci=uci,
+                    san=san,
+                    from_square=uci[:2],
+                    to_square=uci[2:4],
+                    fen=self.board.fen(),
+                    ply=self.board.ply(),
+                    white_clock=self.clocks[chess.WHITE],
+                    black_clock=self.clocks[chess.BLACK],
+                    analysis=state.info,
                 )
+            )
+            await flush_log(force=True)
 
         with open(log_path) as f:
             while True:
@@ -243,10 +445,13 @@ class Game:
                     if proc.returncode is not None:
                         for line in f:
                             await on_line(line)
+                        await flush_log(force=True)
                         break
+                    await flush_log()
                     await asyncio.sleep(0.005)
                     continue
                 await on_line(line)
+                await flush_log()
 
     async def play_game(self) -> None:
         base, inc = parse_tc(self.tc)

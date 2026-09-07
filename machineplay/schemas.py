@@ -50,6 +50,39 @@ class GameStatus(StrEnum):
     ABORTED = "aborted"
 
 
+class SearchInfo(BaseModel):
+    """What one engine reported about its search, distilled from `info` lines.
+
+    Scores are UCI's own: from the searching side's point of view, in
+    centipawns (`score_cp`) or moves-to-mate (`score_mate`), never both. `pv`
+    is the principal variation in UCI move notation, capped so a chatty engine
+    can't push arbitrarily large events.
+    """
+
+    depth: int | None = None
+    seldepth: int | None = None
+    score_cp: int | None = None
+    score_mate: int | None = None
+    nodes: int | None = None
+    nps: int | None = None
+    time_ms: int | None = None
+    pv: list[str] = Field(default_factory=list)
+
+
+class UciLine(BaseModel):
+    """One line of the UCI conversation, for the game page's debug view.
+
+    `sent` is True for what the GUI sent the engine (fastchess's `<---`) and
+    False for the engine's own output (`--->`). `ply` is the game's ply when
+    the line was logged, so the view can be read alongside the moves.
+    """
+
+    side: Literal["white", "black"]
+    sent: bool
+    text: str
+    ply: int
+
+
 class FenEvent(BaseModel):
     type: Literal["fen"] = "fen"
     fen: str
@@ -57,6 +90,9 @@ class FenEvent(BaseModel):
     white_name: str | None
     black_name: str | None
     moves: list[str]
+    # Per-move search summaries, parallel to `moves` (None where the engine
+    # said nothing scoreable).
+    evals: list[SearchInfo | None] = Field(default_factory=list)
     white_clock: float
     black_clock: float
     result: str | None
@@ -81,6 +117,31 @@ class MoveEvent(BaseModel):
     ply: int
     white_clock: float
     black_clock: float
+    # The mover's last search summary, from the `info` lines that preceded its
+    # `bestmove`. None when the engine reported nothing usable.
+    analysis: SearchInfo | None = None
+
+
+class EngineInfoEvent(BaseModel):
+    """An engine's search-in-progress, sent while it is still thinking.
+
+    Throttled by the runner (a new depth, or every few hundred ms) and never
+    persisted: it is superseded by the MoveEvent's `analysis` as soon as the
+    engine moves.
+    """
+
+    type: Literal["engine_info"] = "engine_info"
+    side: Literal["white", "black"]
+    ply: int
+    info: SearchInfo
+
+
+class UciLogEvent(BaseModel):
+    """A batch of UCI transcript lines. Live-only; the backend keeps a bounded
+    tail so a page opened mid-game (or after it ends) still has context."""
+
+    type: Literal["uci_log"] = "uci_log"
+    lines: list[UciLine]
 
 
 class GameEndEvent(BaseModel):
@@ -96,7 +157,12 @@ class GameEndEvent(BaseModel):
 
 
 GameStreamEvent = Annotated[
-    FenEvent | GameStartEvent | MoveEvent | GameEndEvent,
+    FenEvent
+    | GameStartEvent
+    | MoveEvent
+    | EngineInfoEvent
+    | UciLogEvent
+    | GameEndEvent,
     Field(discriminator="type"),
 ]
 
