@@ -19,9 +19,8 @@ from machineplay.config import (
     pull_ref,
 )
 
-# fastchess trace-log lines name the engine, the direction and the UCI payload:
-# "[Engine] [14:58:25.264] <tid>  White <--- go wtime 3100 …". "<---" is what
-# the GUI sent the engine, "--->" the engine's own output.
+# "[Engine] [14:58:25.264] <tid>  White <--- go wtime 3100 …"; "<---" is what
+# fastchess sent the engine, "--->" the engine's output.
 _LINE_RE = re.compile(r"\s(White|Black)\s(<---|--->)\s(.*?)\s*$")
 _GO_RE = re.compile(r"^go\b.*\bwtime\s+(\d+).*\bbtime\s+(\d+)")
 _BESTMOVE_RE = re.compile(r"^bestmove\s+([a-h][1-8][a-h][1-8][qrbn]?|0000)\b")
@@ -34,28 +33,23 @@ _INFO_INTS = {
     "nps": "nps",
     "time": "time_ms",
 }
-# Caps on what one search may push to the browser: PV plies, transcript lines,
-# and how often an in-progress search reports itself.
+# Caps on what one search may push to the browser.
 PV_LIMIT = 16
 LOG_LINES_PER_SEARCH = 150
-# How often an in-progress search may report itself: on a new depth, but never
-# more than this often. Without the floor a fast engine emits a couple of dozen
-# events a second — one per depth — and every one of them is a re-render in
-# every browser watching the game.
+# A search reports on each new depth or every INFO_INTERVAL, but never faster
+# than INFO_MIN_GAP: each event re-renders every watching browser.
 INFO_INTERVAL = 0.3
 INFO_MIN_GAP = 0.15
-# Minimum gap between `info` lines kept for the transcript. Depth alone is not
-# enough of a filter: an engine that sees a forced mate re-reports it at every
-# remaining depth, hundreds of times in a few milliseconds.
+# An engine that sees mate re-reports it at every depth within milliseconds.
 LOG_INFO_INTERVAL = 0.05
-# UCI lines are batched: flushed at this many, or after this long.
+# UCI lines are flushed at this many, or after this long.
 LOG_BATCH = 24
 LOG_INTERVAL = 0.3
 
 
 def parse_info(payload: str) -> schemas.SearchInfo | None:
-    """One UCI `info` line as a SearchInfo, or None when it says nothing about
-    a search ("info string …", an extra `multipv` line, plain chatter)."""
+    """None for lines that say nothing about the search ("info string …",
+    extra `multipv` lines)."""
     tokens = payload.split()
     if len(tokens) < 2 or tokens[0] != "info":
         return None
@@ -101,21 +95,14 @@ def parse_info(payload: str) -> schemas.SearchInfo | None:
 def merge_info(
     old: schemas.SearchInfo | None, new: schemas.SearchInfo
 ) -> schemas.SearchInfo:
-    """Fold one `info` line into what the engine has said so far this search.
-
-    UCI lines are partial: an engine reports `depth … currmove …` while working
-    through a depth and only quotes its score and PV when it has one. Replacing
-    the state with every line would blank the score half the time, so fields
-    carry over until the engine says otherwise — the same running picture a GUI
-    keeps. A fresh `go` throws the whole state away.
-    """
+    """Fold one `info` line into the search so far. Lines are partial, so
+    fields carry over until the engine says otherwise, as in a GUI."""
     if old is None:
         return new
     merged = old.model_copy()
     fields = new.model_dump(exclude_none=True)
     if not new.pv:
         fields.pop("pv", None)
-    # The two score kinds are alternatives, so a new one clears the other.
     if new.score_cp is not None:
         merged.score_mate = None
     if new.score_mate is not None:
@@ -127,9 +114,8 @@ def merge_info(
 
 @dataclass
 class _SideState:
-    """One engine's per-search bookkeeping while it thinks: the best `info` seen
-    so far, plus what has already been sent or logged, so a chatty engine is
-    thinned instead of relayed line by line. Replaced wholesale on each `go`."""
+    """One engine's per-search state, so a chatty engine is thinned rather than
+    relayed. Replaced on each `go`."""
 
     info: schemas.SearchInfo | None = None
     sent_at: float = 0.0
@@ -145,18 +131,10 @@ def parse_tc(spec: str) -> tuple[float, float]:
 
 
 def docker_run_args(ref: str, name: str, cpu: int) -> str:
-    """fastchess `args=` value that runs the engine image as a sandboxed container.
+    """fastchess `args=` running the engine as a sandboxed container.
 
-    The container speaks UCI over stdio (`-i`), has no network, drops all
-    capabilities, and is capped on memory/cpu. It's given an explicit `--name`
-    so an aborted game can force-remove it (killing fastchess would otherwise
-    orphan the container). fastchess launches `docker` with these args (one
-    container per engine) and pipes the UCI protocol through.
-
-    Both of a game's containers are pinned to the same dedicated core (`cpu`,
-    from the game's slot): with Ponder off only the side to move computes, so
-    the thinking engine gets the whole core and concurrent games can't contend
-    on wall-clock time controls.
+    Named so an aborted game can force-remove it. Both engines share one core:
+    with Ponder off only the side to move computes.
     """
     return (
         f"run --rm -i --network none --name {name} "
@@ -166,14 +144,11 @@ def docker_run_args(ref: str, name: str, cpu: int) -> str:
 
 
 def _tail(output: bytes | str, lines: int = 10) -> str:
-    """Last few lines of a child's output, for one-line-ish error reporting."""
     text = output.decode(errors="replace") if isinstance(output, bytes) else output
     return "\n".join(text.strip().splitlines()[-lines:])
 
 
-# How fastchess names an engine fault on stdout. Matched against an allowlist
-# rather than "any warning": every run also warns about missing opening books,
-# an absent Ponder option and unscorable info lines, none of which end a game.
+# An allowlist: every run also prints harmless warnings.
 _FAULT_RE = re.compile(
     r"^(?:Warning[;:]\s*)?(.*(?:is not responsive|stalled / disconnected"
     r"|disconnects|failed to start|illegal move).*)$",
@@ -181,28 +156,18 @@ _FAULT_RE = re.compile(
 )
 
 
-# What is worth keeping from fastchess's trace log: the UCI transcript
-# ("White ---> info string …") and anything it flagged. The rest is bookkeeping
-# — thread ids, destructors, "Saving results…" — which is all a plain tail of a
-# failed run would show, since the fault happens a 60s timeout before the end.
+# The UCI transcript and flagged lines; a plain tail would be all bookkeeping.
 _TRACE_RE = re.compile(r"--->|<---|\[WARN|\[ERROR")
 
 
 def _log_excerpt(path: str, lines: int = 20) -> str:
-    """The tail of a fastchess trace log, minus its bookkeeping."""
     with open(path) as f:
         kept = [line for line in f if _TRACE_RE.search(line)]
     return "".join(kept[-lines:]).strip()
 
 
 def _failure_reason(stdout: bytes) -> str | None:
-    """Why fastchess gave up, in its own words.
-
-    fastchess reports engine faults on *stdout*, leaving stderr empty, so a bare
-    exit code is all the caller would otherwise see. The earliest fault line is
-    the cause; the ones after it are its fallout ("stalled / disconnected",
-    "stopping tournament").
-    """
+    """The first engine fault fastchess printed on stdout; later ones are fallout."""
     for line in stdout.decode(errors="replace").splitlines():
         if m := _FAULT_RE.match(line.strip()):
             return m.group(1).strip()
@@ -210,17 +175,10 @@ def _failure_reason(stdout: bytes) -> str | None:
 
 
 def termination(game_obj: chess.pgn.Game) -> str | None:
-    """How the game ended, in fastchess's words.
-
-    The `Termination` header is "normal" for every ordinary finish — mate,
-    stalemate, repetition and the rest all collapse into it — so the only
-    place the actual reason survives is the last field of the final move's
-    comment, after the eval and clock ones:
+    """How the game ended. The `Termination` header says "normal" for every
+    finish; the real reason is the final move comment's last field:
 
         Ke6 {0.00/245 0.003s, tl=1.954s, Draw by 3-fold repetition} 1/2-1/2
-
-    Absent that (a PGN with no move comments), fall back to the header, minus
-    its "normal", which says nothing worth showing.
     """
     field = game_obj.end().comment.rsplit(",", 1)[-1].strip()
     if field[:1].isalpha() and not field.startswith("tl="):
@@ -230,16 +188,10 @@ def termination(game_obj: chess.pgn.Game) -> str | None:
 
 
 def opening_pgn(moves: list[str]) -> str:
-    """A book line as the one-game PGN fastchess wants for `-openings`.
+    """A book line as a one-game PGN for `-openings`. PGN, not EPD, so fastchess
+    sends `position startpos moves …`, which early starter engines handle.
 
-    fastchess has no way of being handed moves directly — a book file is the
-    only channel — so the line the backend dealt is written back out as the
-    smallest PGN that carries it. PGN and not EPD: fastchess then opens with
-    `position startpos moves …` instead of `position fen …`, so an engine that
-    only implements the `startpos` form (every engine from the starter's early
-    chapters) plays these games fine.
-
-    Raises ValueError if a move is not legal in the line so far.
+    Raises ValueError on an illegal move.
     """
     board = chess.Board()
     for uci in moves:
@@ -251,10 +203,7 @@ def opening_pgn(moves: list[str]) -> str:
 
 
 async def docker_pull(ref: str, logger: log.Log = log.root) -> str | None:
-    """Pull an image. Returns None on success, or docker's output on failure.
-
-    Capped at PULL_TIMEOUT so a wedged pull can't hold a game slot forever.
-    """
+    """None on success, or docker's output on failure."""
     child = await proc.start(
         ["docker", "pull", ref],
         stdout=asyncio.subprocess.PIPE,
@@ -273,7 +222,6 @@ async def docker_pull(ref: str, logger: log.Log = log.root) -> str | None:
 
 
 async def docker_rm(name: str, logger: log.Log = log.root) -> None:
-    """Best-effort force-remove of a (possibly already-gone) container."""
     child = await proc.start(
         ["docker", "rm", "-f", name],
         stdout=asyncio.subprocess.DEVNULL,
@@ -300,8 +248,6 @@ class Game:
         self.tc = tc
         self.slot = slot
         self.opening = opening or []
-        # Games run concurrently and their lines interleave in the runner's
-        # log; label every one of them with the game's short id.
         self.log = log.Log(f"game {log.short(game_id)}")
         self.queue: asyncio.Queue[schemas.ClientCommand] = queue
         self.san_moves: list[str] = []
@@ -364,8 +310,7 @@ class Game:
             flushed_at = now
 
         def record(side: chess.Color, sent: bool, text: str) -> None:
-            """Queue a transcript line, capped per search so an engine that
-            spams cannot flood the browser (or this process's memory)."""
+            """Queue a transcript line, capped per search."""
             state = sides[side]
             if state.logged_lines > LOG_LINES_PER_SEARCH:
                 return
@@ -408,9 +353,7 @@ class Game:
                 info = merge_info(state.info, info)
                 state.info = info
                 now = loop.time()
-                # Keep one transcript line per depth, and never two in the same
-                # breath: a deep search reports each depth many times over, and
-                # only its shape is worth reading back.
+                # One transcript line per depth, rate-limited.
                 if (
                     info.depth != state.logged_depth
                     and now - state.logged_at >= LOG_INFO_INTERVAL
@@ -509,11 +452,7 @@ class Game:
             )
         )
 
-        # Play the book line onto this side's board before anyone sees the
-        # game. fastchess plays the opening itself and never reports it — the
-        # trace log's `bestmove` lines start after the book — so without this
-        # the board here would lag the real game by the length of the opening
-        # and every engine move would land on the wrong position.
+        # fastchess plays the opening without reporting it, so replay it here.
         try:
             book_pgn = opening_pgn(self.opening) if self.opening else None
         except ValueError as exc:
@@ -540,8 +479,7 @@ class Game:
         white_ref = pull_ref(self.white.repository, self.white.digest)
         black_ref = pull_ref(self.black.repository, self.black.digest)
 
-        # Pull both images up front so a slow first pull can't trip fastchess's
-        # engine-startup timeout, and pull failures surface as a clean game end.
+        # Up front, so a slow pull can't trip fastchess's startup timeout.
         for ref in dict.fromkeys((white_ref, black_ref)):
             if (err := await docker_pull(ref, self.log)) is not None:
                 self.log.error(f"pull failed for {ref}: {err}")
@@ -564,9 +502,7 @@ class Game:
 
             white_container = f"mp-{self.game_id}-w"
             black_container = f"mp-{self.game_id}-b"
-            # One book file holding one line: with `-rounds 1 -games 1`
-            # fastchess plays its first opening and stops, which is exactly the
-            # line the backend picked for this game.
+            # A one-line book: `-rounds 1 -games 1` plays exactly that line.
             opening_args: list[str] = []
             if book_pgn is not None:
                 book_path = os.path.join(tmpdir, "opening.pgn")
@@ -604,9 +540,7 @@ class Game:
                 "notation=san",
                 "timeleft=true",
                 "append=false",
-                # fastchess dumps the resolved tournament config next to
-                # itself on every run; keep that inside the game's temp dir
-                # instead of littering the runner's working directory.
+                # fastchess writes its config on every run; keep it in tmpdir.
                 "-config",
                 f"outname={os.path.join(tmpdir, 'fastchess-config.json')}",
                 "-log",
@@ -631,15 +565,11 @@ class Game:
                 if fastchess.returncode is None:
                     fastchess.kill()
                     await fastchess.wait()
-                # Killing fastchess orphans its `docker run` children, so the
-                # containers keep running; force-remove them explicitly.
+                # Killing fastchess orphans its `docker run` containers.
                 await docker_rm(white_container, self.log)
                 await docker_rm(black_container, self.log)
 
-            # Safety net: fastchess normally ends the game on its own (time
-            # forfeit etc.), but a hung container/pipe would hold this slot
-            # forever. Cap the whole game at what the clocks could plausibly
-            # use (300 moves/side) plus generous startup slack.
+            # Against hung containers: 300 moves a side plus startup slack.
             wallclock = 2 * (base + 300 * inc) + 120
             try:
                 output, errors = await asyncio.wait_for(
@@ -664,16 +594,12 @@ class Game:
                 await _kill_fastchess()
                 raise
 
-            # A non-zero exit means fastchess itself gave up (bad engine args,
-            # an engine that never answered `uci`, a mangled UCI line, …).
             fault: str | None = None
             if fastchess.returncode != 0:
                 fault = _failure_reason(output) or _tail(errors) or "no output"
                 self.log.error(f"fastchess exited {fastchess.returncode}: {fault}")
-                # The trace log holds the actual UCI conversation, and it is the
-                # only place that says what the engine got wrong. The temp dir
-                # takes it along on the way out, so tail it into the runner log
-                # while it still exists.
+                # Only the trace log says what the engine got wrong, and tmpdir
+                # is about to take it away.
                 if os.path.exists(log_path):
                     self.log.error("engine log tail:\n" + _log_excerpt(log_path))
 
@@ -681,21 +607,16 @@ class Game:
             if os.path.exists(pgn_path):
                 with open(pgn_path) as f:
                     pgn_text = f.read()
-            # fastchess still creates the PGN file when it aborts before the
-            # first move; an empty one means there is no game to record.
+            # fastchess writes an empty PGN when it aborts before the first move.
             game_obj = (
                 chess.pgn.read_game(io.StringIO(pgn_text)) if pgn_text.strip() else None
             )
             if game_obj is not None:
                 self.result = game_obj.headers.get("Result", "*")
-                # fastchess records how the game ended ("black loses on time",
-                # "draw by 3-fold repetition", …).
                 reason = termination(game_obj)
                 self.status = schemas.GameStatus.ENDED
             else:
-                # No PGN is an engine fault, not a result: abort it — which
-                # keeps it out of standings — carrying fastchess's diagnosis,
-                # so the game page says why instead of showing a bare `*`.
+                # An engine fault, not a result: abort, with fastchess's diagnosis.
                 self.log.warn("fastchess produced no usable PGN")
                 self.result = "*"
                 pgn_text = ""

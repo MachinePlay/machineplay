@@ -9,12 +9,7 @@ from machineplay.credentials import config_dir
 
 
 def _load_or_create_runner_id() -> UUID:
-    """The runner's stable id, persisted so it survives restarts.
-
-    A fresh uuid4 every start would register a brand-new runner in the backend on
-    each restart, so we persist it to ``~/.config/machineplay/runner.json`` and
-    reuse it. Set ``RUNNER_ID`` in the environment to pin it explicitly (the
-    production runner does this declaratively via its systemd unit)."""
+    """Persisted so a restart isn't registered as a new runner."""
     path = config_dir() / "runner.json"
     try:
         return UUID(json.loads(path.read_text())["runner_id"])
@@ -30,50 +25,30 @@ RUNNER_ID = UUID(_env_runner_id) if _env_runner_id else _load_or_create_runner_i
 BACKEND_URL = os.environ.get("BACKEND_URL", "wss://api.machineplay.org/ws")
 MAX_GAMES = int(os.environ.get("MAX_GAMES") or (os.cpu_count() or 1))
 
-# How often (seconds) the runner samples and reports CPU/RAM utilization.
 TELEMETRY_INTERVAL = float(os.environ.get("TELEMETRY_INTERVAL", "2.0"))
 FASTCHESS_PATH = os.environ.get("FASTCHESS_PATH", "fastchess")
 
-# REST API base for the CLI dev tool (login/upload). The website the user logs
-# into to copy a token.
 API_BASE_URL = os.environ.get("MACHINEPLAY_API_URL", "https://api.machineplay.org")
 WEB_URL = os.environ.get("MACHINEPLAY_WEB_URL", "https://machineplay.org")
 
-# Docker registry engines are pushed to and pulled from. `machineplay login`
-# runs `docker login` against this host with the API token, `machineplay upload`
-# tags/pushes images here as `<host>/<login>/<engine>:<version>`, and the runner
-# pulls `<host>/<repository>@<digest>` to play them. A co-located runner can
-# point this at the local registry (e.g. `127.0.0.1:5000`); a remote runner pulls
-# over the public host (pulls are public, no auth needed).
+# Pulls are anonymous; a co-located runner can use the local `127.0.0.1:5000`.
 REGISTRY_HOST = os.environ.get("MACHINEPLAY_REGISTRY", "registry.machineplay.org")
 
-# Platform engine images are built for. Runners are amd64 Linux, and nothing
-# downstream would catch an image that isn't: the runner pulls by digest, and a
-# digest-pinned pull skips docker's platform selection, so a foreign image pulls
-# fine and only dies as `exec format error` once the game starts. `machineplay
-# upload` therefore builds — and verifies — against this. On Apple Silicon that
-# means docker emulates (Rosetta/qemu), which is slower but produces an image
-# runners can actually exec. Override only once a runner on another
-# architecture exists.
+# Runners are amd64, and a digest-pinned pull skips docker's platform check, so a
+# foreign image would only fail at game start with `exec format error`.
 ENGINE_PLATFORM = os.environ.get("MACHINEPLAY_PLATFORM", "linux/amd64")
 
-# Seconds `machineplay upload` gives the built image to answer `uci`. Unset, it
-# picks its own default — a generous one when the image runs emulated.
+# Seconds `upload` waits for `uci`; None picks a default, longer when emulated.
 _uci_timeout = os.environ.get("MACHINEPLAY_UCI_TIMEOUT")
 UCI_TIMEOUT = float(_uci_timeout) if _uci_timeout else None
 
-# Per-engine container resource limits, passed to `docker run`. Each engine
-# plays in its own sandboxed container; these cap what one can consume.
 ENGINE_MEMORY = os.environ.get("ENGINE_MEMORY", "512m")
 ENGINE_CPUS = os.environ.get("ENGINE_CPUS", "1")
 
 
 def _available_cpus() -> list[int]:
-    """Host CPUs game slots are pinned to (slot i → AVAILABLE_CPUS[i mod n]).
-
-    Respects the runner process's own affinity mask where the platform exposes
-    it, so a systemd `CPUAffinity=` on the unit also confines the engine
-    containers."""
+    """Host CPUs game slots are pinned to. Respects the process's affinity, so
+    a systemd `CPUAffinity=` also confines the engine containers."""
     if hasattr(os, "sched_getaffinity"):
         return sorted(os.sched_getaffinity(0))
     return list(range(os.cpu_count() or 1))
@@ -81,20 +56,16 @@ def _available_cpus() -> list[int]:
 
 AVAILABLE_CPUS = _available_cpus()
 
-# Safety-net timeouts (seconds). A wedged `docker pull` or a hung fastchess
-# would otherwise hold a game slot forever; the wallclock cap for a game is
-# derived from its time control in game.py, PULL_TIMEOUT applies per image.
+# Per image, so a wedged pull can't hold a slot forever.
 PULL_TIMEOUT = float(os.environ.get("PULL_TIMEOUT", "600"))
 
 
 def pull_ref(repository: str, digest: str) -> str:
-    """Fully-qualified, digest-pinned image reference the runner pulls/runs."""
     return f"{REGISTRY_HOST}/{repository}@{digest}"
 
 
-# Reconnect backoff (seconds). Full jitter: sleep ~ U(0, delay), delay doubles
-# up to RECONNECT_MAX. A session that stayed up at least RECONNECT_RESET_AFTER
-# is considered healthy, so its drop (e.g. a backend hot-reload) resets backoff.
+# Full-jitter backoff. A session that lasted RECONNECT_RESET_AFTER resets it,
+# so a backend hot-reload reconnects quickly.
 RECONNECT_BASE = float(os.environ.get("RECONNECT_BASE", "0.5"))
 RECONNECT_MAX = float(os.environ.get("RECONNECT_MAX", "30.0"))
 RECONNECT_RESET_AFTER = float(os.environ.get("RECONNECT_RESET_AFTER", "5.0"))

@@ -3,19 +3,18 @@
 Upload a UCI chess engine as a Docker image and watch it play, live, on
 [machineplay.org](https://machineplay.org).
 
-This package is the client side of that, in two roles:
+This package has two roles:
 
-- **the CLI** (`machineplay login` / `upload` / `whoami` / `logout`) — builds
-  the Dockerfile in the current directory, smoke-tests that it speaks UCI,
-  pushes it to the machineplay registry and registers the new version.
-- **the runner** (`machineplay runner`) — a daemon that connects to the backend
-  over a WebSocket, pulls engine images and plays games with
-  [fastchess](https://github.com/Disservin/fastchess), streaming every move
-  back as it happens. Each game runs its two engines in sandboxed containers
-  (no network, dropped capabilities, capped memory) pinned to one core.
+- **the CLI** (`machineplay login` / `upload` / `whoami` / `logout`) builds the
+  Dockerfile in the current directory, checks that it speaks UCI, pushes it and
+  registers the new version.
+- **the runner** (`machineplay runner`) connects to the backend, pulls engine
+  images and plays games with [fastchess](https://github.com/Disservin/fastchess),
+  streaming every move. Each game's engines run in sandboxed containers (no
+  network, no capabilities, capped memory) pinned to one core.
 
-Every external command either role runs is echoed first, so you can see exactly
-what touched your machine:
+Every external command is echoed first, so you can see what touched your
+machine:
 
 ```
 > docker build --platform linux/amd64 -t machineplay-local:latest .
@@ -43,16 +42,13 @@ cd myengine                # the directory with your Dockerfile
 machineplay upload
 ```
 
-`upload` asks for an engine name and a version. The **name** groups versions —
-uploading under the same name again adds a version to the same engine, so keep
-it stable and don't bake a release number into it. Names are lowercase URL
-slugs: your engine ends up at `machineplay.org/<you>/<engine>`.
+`upload` asks for an engine name and a version. Uploading under the same
+**name** adds a version to that engine, so keep it stable and leave release
+numbers out of it. Your engine ends up at `machineplay.org/<you>/<engine>`.
 
-Runners are `linux/amd64`, so that is what `upload` builds and what it checks
-the finished image against — you don't have to do anything special on an Apple
-Silicon Mac beyond letting docker emulate, which makes the build and the UCI
-check slower. A `FROM --platform=…` line in your Dockerfile overrides this and
-is rejected: the image would upload fine and then fail to start on a runner.
+Runners are `linux/amd64`, so `upload` builds for that; on Apple Silicon docker
+emulates, which is slower. Don't pin a different platform with
+`FROM --platform=…`: the image would fail to start on a runner.
 
 ## Run a runner
 
@@ -63,10 +59,9 @@ either from `machineplay login` or in `MP_TOKEN`:
 machineplay runner
 ```
 
-It reports its hardware on connect, plays up to `MAX_GAMES` games concurrently
-(default: one per core), and reconnects on its own if the backend restarts. Its
-identity persists in `~/.config/machineplay/runner.json`, so restarts show up as
-the same runner rather than a new one.
+It plays up to `MAX_GAMES` games at once (default: one per core) and reconnects
+on its own. Its id persists in `~/.config/machineplay/runner.json`, so a restart
+is the same runner.
 
 ## Files this writes
 
@@ -80,8 +75,7 @@ the same runner rather than a new one.
 
 ## Configuration
 
-Everything is overridable from the environment; the defaults point at
-production.
+All from the environment; the defaults point at production.
 
 | Variable | Default | What |
 | --- | --- | --- |
@@ -101,6 +95,4 @@ production.
 
 ## License
 
-This project is licensed under the GNU Affero General Public License, version 3
-or (at your option) any later version (`AGPL-3.0-or-later`). See [LICENSE](LICENSE)
-for the full text.
+`AGPL-3.0-or-later`; see [LICENSE](LICENSE).

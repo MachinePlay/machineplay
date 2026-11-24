@@ -23,12 +23,11 @@ from machineplay.config import (
 )
 from machineplay.game import Game
 
-# Connection-level errors that warrant a reconnect attempt (vs. crashing).
 _RETRYABLE = (OSError, ConnectionClosed, InvalidHandshake, TimeoutError)
 
 
 class _Terminated(Exception):
-    """Raised when the server sends an explicit 'exit' command (stop for good)."""
+    """The server sent 'exit': stop for good."""
 
 
 def _abort_event(game_id: UUID, reason: str) -> schemas.GameEvent:
@@ -50,15 +49,8 @@ def _game_done(
     free_slots: set[int],
     scheduled_commands: asyncio.Queue[schemas.ClientCommand],
 ) -> None:
-    """Drop a finished game; if its task was cancelled or crashed, still report
-    a game end.
-
-    Without this, an unexpected exception in `Game.play_game` (e.g. docker
-    missing from PATH) is swallowed by asyncio and the server's game stays
-    'playing' forever. (On connection teardown the events land on the dying
-    session's queue and go nowhere, which is fine — the backend aborts that
-    session's games itself.)
-    """
+    """Drop a finished game, reporting an end if it was cancelled or crashed;
+    otherwise the backend's game would stay 'playing' forever."""
     if (game := games.pop(game_id, None)) is not None:
         free_slots.add(game.slot)
     if task.cancelled():
@@ -67,8 +59,7 @@ def _game_done(
     if (exc := task.exception()) is None:
         return
     log.error(f"game {log.short(game_id)} crashed: {exc!r}")
-    # A missing dependency already carries a precise message ("`fastchess` is
-    # not installed …"); anything else is a bug, so name its type.
+    # A missing dependency has a precise message; anything else is a bug.
     reason = (
         str(exc)
         if isinstance(exc, proc.CommandNotFound)
@@ -78,8 +69,7 @@ def _game_done(
 
 
 def _load_token() -> str | None:
-    """The API token the runner authenticates with. Prefer ``MP_TOKEN`` (set on
-    the production runner's systemd unit) over the CLI's saved credentials."""
+    """``MP_TOKEN``, else the CLI's saved credentials."""
     env = os.environ.get("MP_TOKEN")
     if env:
         return env
@@ -107,8 +97,7 @@ async def connect_backend_ws(
 
         scheduled_commands: asyncio.Queue[schemas.ClientCommand] = asyncio.Queue()
         games: dict[UUID, Game] = {}
-        # Game slots double as core assignments: slot i pins its game's
-        # containers to AVAILABLE_CPUS[i mod n] (see game.docker_run_args).
+        # Slots double as core assignments (see game.docker_run_args).
         free_slots: set[int] = set(range(MAX_GAMES))
 
         async def receiver() -> None:
@@ -164,8 +153,7 @@ async def connect_backend_ws(
                             )
                         else:
                             running.log.info("stopping (asked by the backend)")
-                            # Cancellation kills fastchess + containers; the
-                            # done-callback reports the aborted game end.
+                            # The done-callback reports the aborted game end.
                             running.task.cancel()
                     case schemas.Terminate():
                         log.info("backend asked this runner to exit")
@@ -177,7 +165,6 @@ async def connect_backend_ws(
                 await ws.send(cmd.model_dump_json())
 
         async def telemetry() -> None:
-            # Report CPU/RAM utilization on a timer via the same outgoing queue.
             hardware.prime_cpu_percent()
             while True:
                 await asyncio.sleep(TELEMETRY_INTERVAL)
@@ -198,9 +185,7 @@ async def connect_backend_ws(
             recv_task.cancel()
             send_task.cancel()
             telemetry_task.cancel()
-            # Abandon in-flight games so their fastchess subprocesses don't
-            # outlive the connection; the backend marks them aborted when it
-            # notices the disconnect.
+            # The backend aborts these games itself when it sees the disconnect.
             if games:
                 log.warn(f"dropping {len(games)} in-flight game(s) with the connection")
             for game in games.values():
@@ -229,13 +214,12 @@ async def run_forever() -> None:
 
         try:
             await connect_backend_ws(ssl_ctx, token, on_connected)
-            return  # connect_backend_ws only returns on a clean close
+            return  # only on a clean close
         except _Terminated:
             log.info("terminated by the backend")
             return
         except InvalidStatus as exc:
-            # A rejected token is not going to start working on retry, so stop
-            # instead of hammering the backend with a bad credential forever.
+            # A rejected token won't start working on retry.
             if exc.response.status_code in (401, 403):
                 log.die(
                     f"the backend rejected this runner's API token "
@@ -246,8 +230,7 @@ async def run_forever() -> None:
         except _RETRYABLE as exc:
             log.error(f"connection lost: {type(exc).__name__}: {exc}")
 
-        # A session that stayed up a while (healthy) resets backoff so a backend
-        # hot-reload reconnects fast; a backend that's truly down keeps backing off.
+        # A healthy session resets backoff, so a hot-reload reconnects fast.
         if (
             connected_at is not None
             and loop.time() - connected_at >= RECONNECT_RESET_AFTER

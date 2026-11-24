@@ -8,11 +8,7 @@ from machineplay.config import API_BASE_URL
 
 
 class ApiError(Exception):
-    """A request to the API that didn't succeed, with a human-readable message.
-
-    Covers both non-2xx responses (message taken from the error body) and
-    transport failures (wrong URL, API down, no network).
-    """
+    """A non-2xx response or transport failure, with a readable message."""
 
 
 def _raise_for_status(resp: httpx.Response) -> None:
@@ -21,7 +17,6 @@ def _raise_for_status(resp: httpx.Response) -> None:
     message = f"HTTP {resp.status_code}"
     try:
         body = resp.json()
-        # AppException handler shape: {"error": {"message": ...}}
         message = body.get("error", {}).get("message") or body.get("detail") or message
     except Exception:
         pass
@@ -31,7 +26,6 @@ def _raise_for_status(resp: httpx.Response) -> None:
 
 
 def _request(method: str, path: str, token: str, **kwargs: Any) -> dict[str, Any]:
-    """Call the API, turning transport errors into ApiError as well."""
     try:
         resp = httpx.request(
             method,
@@ -49,7 +43,6 @@ def _request(method: str, path: str, token: str, **kwargs: Any) -> dict[str, Any
 
 
 def get_me(token: str) -> dict[str, Any]:
-    """Fetch the authenticated user; raises ApiError on an invalid token."""
     return _request("GET", "/me", token, timeout=15.0)
 
 
@@ -61,7 +54,6 @@ def register_engine(
     digest: str,
     size_bytes: int,
 ) -> dict[str, Any]:
-    """Record a pushed registry image as engine `<name>` version `version`."""
     return _request(
         "POST",
         "/engine/register",

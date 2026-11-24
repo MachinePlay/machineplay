@@ -1,8 +1,8 @@
-# Run the tournament runner locally.
+# Run the runner locally (direnv points it at the local stack).
 run:
     uv run machineplay runner
 
-# Pull & restart the runner on the VPS (see deploy-machineplay-cli in malganis).
+# Pull & restart the runner on the VPS.
 deploy:
     ssh root@machineplay.org deploy-machineplay-cli
 
@@ -16,7 +16,7 @@ build:
     uv build
     uvx twine check dist/*
 
-# Publish to PyPI from this machine (needs UV_PUBLISH_TOKEN). Normally CI does
-# it instead: push a v* tag, see .github/workflows/publish.yml.
+# Publish to PyPI by hand (needs UV_PUBLISH_TOKEN); normally pushing a v* tag
+# lets CI do it.
 publish: build
     uv publish

@@ -16,9 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Games/Entertainment :: Board Games",
 ]
-# 3.12 is what the code actually needs (PEP 695 `type` aliases in schemas.py);
-# it's also the system python on Ubuntu 24.04 LTS. Development happens on 3.13
-# (.python-version) — this floor is for people installing from PyPI.
+# PEP 695 `type` aliases need 3.12; development uses 3.13 (.python-version).
 requires-python = ">=3.12"
 dependencies = [
     "certifi>=2026.4.22",

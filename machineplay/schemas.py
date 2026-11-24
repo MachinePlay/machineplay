@@ -7,9 +7,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 class EngineConfig(BaseModel):
     name: str
-    # Docker image coordinates the runner plays from. `repository` is the
-    # registry-relative path (e.g. "alice/myengine"), `digest` pins the exact
-    # image ("sha256:…"); the runner forms `<registry>/<repository>@<digest>`.
+    # The runner pulls `<registry>/<repository>@<digest>`.
     repository: str
     digest: str
 
@@ -19,14 +17,9 @@ class StartGame(BaseModel):
     game_id: UUID
     white: EngineConfig
     black: EngineConfig
-    # Time control "base+inc" in seconds. Required on the wire: the backend
-    # always sets it, so the default lives in one place (backend settings.tc)
-    # rather than being duplicated here.
+    # "base+inc" in seconds; the default lives in the backend's settings.tc.
     tc: str
-    # The opening line to start from, as UCI moves from the standard start
-    # position; empty plays from the initial position. The backend deals these
-    # out of an opening book, so no book file ever reaches a runner and one
-    # game's opening is a couple of dozen bytes on the wire.
+    # UCI moves from the standard start position, dealt from a backend book.
     opening: list[str] = Field(default_factory=list)
 
 
@@ -45,10 +38,7 @@ server_adapter: TypeAdapter[ServerCommandType] = TypeAdapter(ServerCommand)
 
 
 class GameStatus(StrEnum):
-    # Created and pinned (engines/versions/tc) but not yet dispatched to a
-    # runner: the pre-dispatch state for tournament pairings waiting on a free
-    # slot. The runner never emits this — the backend sets it on create and
-    # flips it to PLAYING when the game is scheduled onto a runner.
+    # Not yet dispatched to a runner; backend-only.
     PENDING = "pending"
     PLAYING = "playing"
     ENDED = "ended"
@@ -56,12 +46,10 @@ class GameStatus(StrEnum):
 
 
 class SearchInfo(BaseModel):
-    """What one engine reported about its search, distilled from `info` lines.
+    """One engine's search, distilled from `info` lines.
 
-    Scores are UCI's own: from the searching side's point of view, in
-    centipawns (`score_cp`) or moves-to-mate (`score_mate`), never both. `pv`
-    is the principal variation in UCI move notation, capped so a chatty engine
-    can't push arbitrarily large events.
+    Scores are from the searching side's point of view, `score_cp` or
+    `score_mate` but never both. `pv` is capped.
     """
 
     depth: int | None = None
@@ -75,12 +63,8 @@ class SearchInfo(BaseModel):
 
 
 class UciLine(BaseModel):
-    """One line of the UCI conversation, for the game page's debug view.
-
-    `sent` is True for what the GUI sent the engine (fastchess's `<---`) and
-    False for the engine's own output (`--->`). `ply` is the game's ply when
-    the line was logged, so the view can be read alongside the moves.
-    """
+    """One line of the UCI conversation. `sent` is True for what fastchess sent
+    the engine; `ply` is the game's ply when it was logged."""
 
     side: Literal["white", "black"]
     sent: bool
@@ -95,8 +79,7 @@ class FenEvent(BaseModel):
     white_name: str | None
     black_name: str | None
     moves: list[str]
-    # Per-move search summaries, parallel to `moves` (None where the engine
-    # said nothing scoreable).
+    # Parallel to `moves`.
     evals: list[SearchInfo | None] = Field(default_factory=list)
     white_clock: float
     black_clock: float
@@ -122,18 +105,13 @@ class MoveEvent(BaseModel):
     ply: int
     white_clock: float
     black_clock: float
-    # The mover's last search summary, from the `info` lines that preceded its
-    # `bestmove`. None when the engine reported nothing usable.
+    # The mover's last search before `bestmove`.
     analysis: SearchInfo | None = None
 
 
 class EngineInfoEvent(BaseModel):
-    """An engine's search-in-progress, sent while it is still thinking.
-
-    Throttled by the runner (a new depth, or every few hundred ms) and never
-    persisted: it is superseded by the MoveEvent's `analysis` as soon as the
-    engine moves.
-    """
+    """A search in progress. Throttled and never persisted: the MoveEvent's
+    `analysis` supersedes it."""
 
     type: Literal["engine_info"] = "engine_info"
     side: Literal["white", "black"]
@@ -142,8 +120,7 @@ class EngineInfoEvent(BaseModel):
 
 
 class UciLogEvent(BaseModel):
-    """A batch of UCI transcript lines. Live-only; the backend keeps a bounded
-    tail so a page opened mid-game (or after it ends) still has context."""
+    """A batch of UCI transcript lines; the backend keeps only a tail."""
 
     type: Literal["uci_log"] = "uci_log"
     lines: list[UciLine]
@@ -153,11 +130,9 @@ class GameEndEvent(BaseModel):
     type: Literal["game_end"] = "game_end"
     result: str | None
     pgn: str | None = None
-    # Terminal status: ENDED for games that ran to a result, ABORTED for games
-    # cut short (crash, cancel, disconnect, wallclock kill). Standings should
-    # only count ENDED games.
+    # ABORTED for games cut short; standings count only ENDED.
     status: GameStatus = GameStatus.ENDED
-    # Human-readable termination detail ("time forfeit", "cancelled", …).
+    # "time forfeit", "cancelled", …
     reason: str | None = None
 
 
@@ -173,11 +148,7 @@ GameStreamEvent = Annotated[
 
 
 class HardwareInfo(BaseModel):
-    """Static hardware description a runner reports once, in its Introduction.
-
-    Persisted on the backend's Runner doc so it shows even while offline. GPU
-    fields can be added here later as a purely additive change.
-    """
+    """Static hardware a runner reports in its Introduction."""
 
     cpu_model: str
     cpu_physical_cores: int
@@ -200,11 +171,7 @@ class GameEvent(BaseModel):
 
 
 class Telemetry(BaseModel):
-    """Live resource utilization a runner reports periodically while connected.
-
-    Kept in memory on the backend (meaningful only while online) and fanned out
-    over the runner SSE stream; not persisted.
-    """
+    """Live utilization a runner reports periodically; never persisted."""
 
     cmd: Literal["telemetry"] = "telemetry"
     cpu_percent: float

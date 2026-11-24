@@ -1,10 +1,5 @@
-"""Launching external programs (docker, fastchess) with the command echoed.
-
-Everything the package shells out to goes through here so that (a) the exact
-argv is printed first — see :mod:`machineplay.log` for why — and (b) a missing
-binary surfaces as a :class:`CommandNotFound` carrying an actionable message
-instead of a bare ``FileNotFoundError`` from deep inside asyncio.
-"""
+"""Every external program runs through here: echoed first, and a missing binary
+raises :class:`CommandNotFound` with an install hint."""
 
 import asyncio
 import subprocess
@@ -41,12 +36,7 @@ def run(
     timeout: float | None = None,
     logger: log.Log = log.root,
 ) -> subprocess.CompletedProcess[str]:
-    """Run `argv` to completion, echoing it first.
-
-    With ``capture=False`` the child inherits our stdout/stderr, which is what
-    long, chatty commands (`docker build`, `docker push`) want — their progress
-    belongs on the user's terminal.
-    """
+    """Without ``capture`` the child's progress goes straight to the terminal."""
     logger.cmd(argv)
     try:
         return subprocess.run(
@@ -67,7 +57,6 @@ async def start(
     stderr: int | None = None,
     logger: log.Log = log.root,
 ) -> asyncio.subprocess.Process:
-    """Spawn `argv` in the background, echoing it first."""
     logger.cmd(argv)
     try:
         return await asyncio.create_subprocess_exec(*argv, stdout=stdout, stderr=stderr)
@@ -76,11 +65,7 @@ async def start(
 
 
 def version(argv: Sequence[str], *, logger: log.Log = log.root) -> str | None:
-    """Probe a tool's version line, or None if it isn't installed / didn't answer.
-
-    Used by the runner's preflight so a missing dependency is reported once at
-    startup instead of once per game.
-    """
+    """A tool's version line, or None if it isn't installed or didn't answer."""
     try:
         proc = run(argv, capture=True, timeout=15, logger=logger)
     except (CommandNotFound, subprocess.TimeoutExpired):

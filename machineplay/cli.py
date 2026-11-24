@@ -16,12 +16,8 @@ from machineplay.config import (
 
 
 def _preflight() -> None:
-    """Echo the versions of the external tools the runner drives.
-
-    Warn rather than exit when one is missing: a runner that connects anyway
-    reports a precise per-game reason ("`fastchess` is not installed …") to the
-    web UI, which beats a silent systemd restart loop.
-    """
+    """Echo the external tools' versions. A missing one only warns: each game
+    then reports why it failed, which beats a silent systemd restart loop."""
     for argv in (["docker", "--version"], [FASTCHESS_PATH, "--version"]):
         if (found := proc.version(argv)) is not None:
             log.info(found)
@@ -69,9 +65,7 @@ def cmd_login(_args: argparse.Namespace) -> None:
     path = credentials.save(credentials.Credentials(token=token, login=login))
     log.info(f"logged in as {login} (token saved to {path}, mode 0600)")
 
-    # Also authenticate docker so `machineplay upload` can push straight to the
-    # registry. Non-fatal: the API token is already saved, so `whoami` works
-    # even if docker isn't running yet.
+    # Non-fatal: the API token is already saved.
     if upload.docker_login(token, login):
         log.info(f"docker authenticated with {REGISTRY_HOST}")
     else:
@@ -84,9 +78,6 @@ def cmd_login(_args: argparse.Namespace) -> None:
 def cmd_logout(_args: argparse.Namespace) -> None:
     removed = credentials.clear()
     log.info("removed saved credentials" if removed else "no saved credentials")
-    # Drop the registry credentials `login` wrote too, so logging out really
-    # leaves nothing of ours behind on the machine. A machine without docker
-    # has nothing to drop — that's not a reason to fail the logout.
     try:
         if upload.docker_logout():
             log.info(f"docker credentials for {REGISTRY_HOST} removed")
@@ -111,7 +102,6 @@ def cmd_upload(_args: argparse.Namespace) -> None:
 
 
 def _files_epilog() -> str:
-    """Spell out which files on this machine the tool writes."""
     entries = [
         (str(credentials.config_dir() / "credentials.json"), "API token (`login`)"),
         (str(credentials.config_dir() / "runner.json"), "runner id (`runner`)"),
@@ -151,8 +141,6 @@ def main() -> None:
         "whoami": cmd_whoami,
         "upload": cmd_upload,
     }
-    # No subcommand → show help. The runner is started explicitly with
-    # `machineplay runner` (see ExecStart in malganis/machineplay.nix).
     if args.command is None:
         parser.print_help()
         return
